@@ -81,6 +81,31 @@ export function formatMonthBR(competencia: string): string {
   return `${names[idx] || month}/${year}`;
 }
 
+export function getCurrentDateSaoPaulo(now: Date = new Date()): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(now);
+    const y = parts.find((p) => p.type === 'year')?.value;
+    const m = parts.find((p) => p.type === 'month')?.value;
+    const d = parts.find((p) => p.type === 'day')?.value;
+    if (y && m && d) return `${y}-${m}-${d}`;
+  } catch {
+    // Fallback if timezone database is unavailable
+  }
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function getCurrentMonthSaoPaulo(now: Date = new Date()): string {
+  return getCurrentDateSaoPaulo(now).slice(0, 7);
+}
+
 export function getPreviousMonth(competencia: string): string {
   const [yStr, mStr] = competencia.split('-');
   let y = parseInt(yStr, 10);
@@ -88,6 +113,17 @@ export function getPreviousMonth(competencia: string): string {
   if (m < 1) {
     m = 12;
     y -= 1;
+  }
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+
+export function getNextMonth(competencia: string): string {
+  const [yStr, mStr] = competencia.split('-');
+  let y = parseInt(yStr, 10);
+  let m = parseInt(mStr, 10) + 1;
+  if (m > 12) {
+    m = 1;
+    y += 1;
   }
   return `${y}-${String(m).padStart(2, '0')}`;
 }
@@ -100,6 +136,61 @@ export function getLastNMonths(baseCompetencia: string, count: number): string[]
     curr = getPreviousMonth(curr);
   }
   return result;
+}
+
+/**
+ * Generates a sorted list of selectable months (descending) centered around
+ * the real current month AND always preserving any manually selected month
+ * (including neighbors across year rollovers).
+ */
+export function getSelectableMonths(
+  currentMonth: string = getCurrentMonthSaoPaulo(),
+  selectedMonth?: string,
+  pastMonthsCount = 14,
+  futureMonthsCount = 2
+): string[] {
+  const set = new Set<string>();
+
+  let anchor = currentMonth;
+  for (let i = 0; i < futureMonthsCount; i++) {
+    anchor = getNextMonth(anchor);
+  }
+  getLastNMonths(anchor, pastMonthsCount + futureMonthsCount + 1).forEach((m) => set.add(m));
+
+  if (selectedMonth && /^[0-9]{4}-[0-9]{2}$/.test(selectedMonth)) {
+    set.add(selectedMonth);
+    set.add(getPreviousMonth(selectedMonth));
+    set.add(getNextMonth(selectedMonth));
+  }
+
+  return Array.from(set).sort().reverse();
+}
+
+export function generateInviteToken(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function hashInviteTokenSha256(token: string): Promise<string> {
+  const clean = token.trim();
+  const encoded = new TextEncoder().encode(clean);
+  const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', encoded);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function isInviteExpired(expiraEmMillis: number, nowMillis: number = Date.now()): boolean {
+  return !Number.isFinite(expiraEmMillis) || expiraEmMillis <= nowMillis;
 }
 
 export function roundCents(value: number): number {

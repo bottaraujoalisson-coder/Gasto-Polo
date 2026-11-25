@@ -33,8 +33,31 @@ export interface UsuarioRede {
   perfil: PerfilUsuario;
   poloIds: string[];
   ativo: boolean;
+  conviteId?: string;
   criadoEm: string;
   atualizadoEm: string;
+}
+
+export type StatusConvite = 'pendente' | 'aceito' | 'cancelado' | 'expirado';
+
+export interface ConviteUsuario {
+  id: string;
+  redeId: string;
+  redeNome: string;
+  nome: string;
+  email: string;
+  perfil: PerfilUsuario;
+  poloIds: string[];
+  status: StatusConvite;
+  tokenHash: string;
+  aceitoTokenHash: string;
+  expiraEm: string;
+  expiraEmMillis: number;
+  criadoPor: string;
+  criadoEm: string;
+  atualizadoEm: string;
+  aceitoPorUid: string;
+  aceitoEm: string;
 }
 
 export interface Polo {

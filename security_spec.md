@@ -1,25 +1,31 @@
-# GastoPolo — Security Specification (Phase 0 TDD)
+# GastoPolo — Security Specification (Phase 0 TDD & Audit Remediation)
 
-## 1. Data Invariants
-1. **Multi-Tenant Master Gate**: No document inside `/redes/{redeId}/...` can be read or written unless the user has an active (`ativo == true`) membership record at `/redes/{redeId}/usuarios/$(request.auth.uid)` (or is the creator/bootstrapped admin creating the initial `Rede` and their own `Admin` membership record).
-2. **Immediate Revocation**: If a user's `ativo` flag in `/redes/{redeId}/usuarios/{uid}` is set to `false`, all read and write access to the `Rede` and its subcollections is synchronously revoked.
-3. **Polo-Level RBAC Isolation**:
-   - `admin`: Full access across all polos, categories, users, budgets, and settings in their `redeId`.
-   - `gestor`: Can only read/write launches, budgets, campaigns, and action plans where `poloId in usuario.poloIds`, and can approve/reject pending launches in their assigned polos.
-   - `operador`: Can only read data for `poloId in usuario.poloIds`, create launches in their assigned `poloIds`, and update their own launches (`criadoPor == request.auth.uid`) only while `status == 'pendente'`.
-   - `leitor`: Read-only access limited to their assigned `poloIds`.
-4. **Strict Schema & Update-Gap Protection**: Every `create` and `update` validates `isValid[Entity](incoming())`, enforces strict key sets (`hasAll` + `hasOnly`), bounded string lengths (`.size() <= MAX`), bounded arrays (`poloIds.size() <= 50`), and immutable fields (`redeId`, `criadoPor`, `criadoEm`).
+## 1. Data Invariants & Multi-Tenant Architecture
+- **No Hardcoded Email Admin Bypass**: There is zero privilege granted by specific email addresses or domains. All administrative authority derives strictly from an active membership document `/redes/{redeId}/usuarios/{request.auth.uid}` with `ativo == true` and `perfil == 'admin'` inside that specific `redeId`.
+- **Controlled First Administrator**: A user can create their own initial `admin` membership document `/redes/{redeId}/usuarios/{uid}` ONLY when `uid == request.auth.uid`, no member document exists yet for their UID in that `redeId`, and the parent `/redes/{redeId}` document has `criadoPor == request.auth.uid` (either pre-existing or created atomically in the same batch).
+- **Strict Cross-Tenant Isolation**: An administrator or member of `rede-a` has zero read or write access to `rede-b` or any of its subcollections.
+- **Real User Invitations (`/convites/{conviteId}`)**:
+  - Only an active `admin` of `redeId` can create an invite for `redeId`.
+  - Only the SHA-256 `tokenHash` (64 hex chars) of the single-use invite token is stored.
+  - Only a verified user whose `request.auth.token.email == existing().email` can accept a `pendente` invite before `existing().expiraEmMillis > request.time.toMillis()`, providing `aceitoTokenHash == existing().tokenHash`.
+  - When accepting an invite, the user atomically creates `/redes/{redeId}/usuarios/{request.auth.uid}` with `conviteId`, where `perfil` and `poloIds` MUST match the invite's pre-assigned `perfil` and `poloIds`. Because `get(convite).data.status == 'pendente'` and `getAfter(convite).data.status == 'aceito'`, an invite can never be reused.
+- **Strict Role & Polo Isolation**:
+  - `admin`: Full access within their linked `redeId` only.
+  - `gestor`: Reads/writes only within their authorized `poloIds`, approves pending launches, manages budgets/campaigns/action plans for their polos. Cannot manage network settings, categories, or users.
+  - `operador`: Creates launches in their authorized `poloIds` and edits only their own launches while `status == 'pendente'`. Cannot self-approve or edit launches in unauthorized polos.
+  - `leitor`: Read-only access to their authorized `poloIds`. Cannot create, update, or delete any document in any collection (including `auditoria`).
+  - Inactive users (`ativo == false`): Immediately lose all read and write access across the network.
 
-## 2. The "Dirty Dozen" Payloads
-1. **Unauthenticated Write**: Creating a `Rede` or `Lancamento` with `request.auth == null` -> `PERMISSION_DENIED`.
-2. **Unverified Email Write**: Creating a `Lancamento` when `request.auth.token.email_verified == false` -> `PERMISSION_DENIED`.
-3. **Cross-Tenant Read/Write**: User from `rede_A` attempting to read or create a `Lancamento` in `rede_B` -> `PERMISSION_DENIED`.
-4. **Inactive User Access**: User with `ativo == false` attempting to read `/redes/{redeId}/lancamentos/{id}` -> `PERMISSION_DENIED`.
-5. **Cross-Polo Read (Operador Polo A reading Polo B)**: Operador assigned only to `['polo_A']` attempting to read or list a `Lancamento` with `poloId == 'polo_B'` -> `PERMISSION_DENIED`.
-6. **Self-Privilege Escalation**: Operador attempting to update their own `/redes/{redeId}/usuarios/{uid}` `perfil` from `'operador'` to `'admin'` -> `PERMISSION_DENIED`.
-7. **Unauthorized Approval by Operador**: Operador attempting to update a pending `Lancamento` `status` to `'aprovado'` when `valorTotal > limiteAprovacao` or modifying another user's launch -> `PERMISSION_DENIED`.
-8. **Terminal/Approved Launch Tampering by Operador**: Operador attempting to edit their own `Lancamento` after `status == 'aprovado'` -> `PERMISSION_DENIED`.
-9. **Shadow Field Injection**: Injecting an undeclared field `isSuperAdmin: true` into a `Lancamento` or `UsuarioRede` document -> `PERMISSION_DENIED`.
-10. **Denial-of-Wallet String Overflow**: Sending a 50KB `descricao` or 2KB `poloId` path variable -> `PERMISSION_DENIED`.
-11. **Identity Spoofing on Creation**: Creating a `Lancamento` with `criadoPor` set to another user's UID -> `PERMISSION_DENIED`.
-12. **Immutable Field Mutation**: Updating `criadoEm`, `criadoPor`, or `redeId` on an existing `Lancamento` -> `PERMISSION_DENIED`.
+## 2. The Dirty Dozen Payloads (All Must Return `PERMISSION_DENIED`)
+1. Unauthenticated read/write to `/redes/{redeId}` or `/convites/{conviteId}`.
+2. Authenticated but unverified (`email_verified: false`) user attempting to create a network, launch, or accept an invite.
+3. Email-based privilege escalation attempt: user with any email (including former hardcoded admin email) attempting to read or modify a network they do not belong to.
+4. User of `rede-a` attempting to read or modify `/redes/rede-b/lancamentos/{id}`.
+5. User attempting to bootstrap themselves as `admin` on an existing `rede-a` where `criadoPor != request.auth.uid`.
+6. User attempting to forge `/userRedes/{uid}` pointing to a `redeId` where they have no active `/redes/{redeId}/usuarios/{uid}` document or claiming a higher `perfil`.
+7. User attempting to escalate their own `perfil` from `operador` to `admin` in `/redes/{redeId}/usuarios/{uid}`.
+8. `operador` restricted to `polo-a` attempting to read or create a launch in `polo-b`.
+9. `leitor` attempting to create, update, or delete a launch, supplier, or audit entry.
+10. User `B` (`other@rede.com`) attempting to accept an invite addressed to `invited@rede.com`.
+11. Invited user attempting to accept an expired invite (`expiraEmMillis <= request.time.toMillis()`) or reuse an already accepted invite (`status == 'aceito'`).
+12. Invited user attempting to change their assigned `perfil` from `operador` to `admin` during invite acceptance.

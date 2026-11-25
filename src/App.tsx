@@ -13,7 +13,8 @@ import { RelatorioPage } from './pages/RelatorioPage';
 import { ConfiguracoesPage } from './pages/ConfiguracoesPage';
 
 const AppRoutes: React.FC = () => {
-  const { authLoading, dataLoading, rede } = useApp();
+  const { authLoading, dataLoading, firebaseUser, isEmailVerified, isLocalWorkspace, rede } =
+    useApp();
 
   if (authLoading || dataLoading) {
     return (
@@ -27,6 +28,11 @@ const AppRoutes: React.FC = () => {
         </div>
       </div>
     );
+  }
+
+  // Block unverified email accounts from accessing protected onboarding or network routes
+  if (firebaseUser && !isEmailVerified && !isLocalWorkspace) {
+    return <AuthAndOnboardingPage />;
   }
 
   if (!rede) {

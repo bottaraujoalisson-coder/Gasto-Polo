@@ -1,29 +1,40 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Building2,
   CheckCircle2,
   Database,
+  KeyRound,
+  LogOut,
   Lock,
   Mail,
+  MailCheck,
   Plus,
+  RefreshCw,
+  Send,
   ShieldCheck,
   Trash2,
   UserPlus,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { PerfilUsuario } from '../types';
-import { CATEGORIAS_PADRAO } from '../utils/financeRules';
+import { CATEGORIAS_PADRAO, formatDateBR } from '../utils/financeRules';
 
 export const AuthAndOnboardingPage: React.FC = () => {
   const {
     firebaseUser,
+    isEmailVerified,
     isLocalWorkspace,
     rede,
+    myPendingInvites,
     loginWithGoogle,
     loginWithEmail,
     registerWithEmail,
+    resendVerificationEmail,
+    refreshEmailVerification,
     enterInteractiveWorkspace,
+    logout,
     completeOnboarding,
+    acceptInvite,
   } = useApp();
 
   // Auth form states
@@ -33,6 +44,20 @@ export const AuthAndOnboardingPage: React.FC = () => {
   const [senhaAuth, setSenhaAuth] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
+
+  // Email verification screen states
+  const [verifyBusy, setVerifyBusy] = useState(false);
+  const [resendBusy, setResendBusy] = useState(false);
+  const [verifyNotice, setVerifyNotice] = useState<string | null>(null);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  // Invite acceptance states
+  const [inviteTokensById, setInviteTokensById] = useState<Record<string, string>>({});
+  const [manualInviteId, setManualInviteId] = useState('');
+  const [manualInviteToken, setManualInviteToken] = useState('');
+  const [inviteBusyId, setInviteBusyId] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
 
   // Onboarding Wizard states
   const [showWizardOnly, setShowWizardOnly] = useState(false);
@@ -60,7 +85,25 @@ export const AuthAndOnboardingPage: React.FC = () => {
   const [onboardingSubmitting, setOnboardingSubmitting] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
 
-  const needsOnboarding = (Boolean(firebaseUser) || isLocalWorkspace || showWizardOnly) && !rede;
+  // Pre-fill inviteId and single-use token if user opened an invite link (?inviteId=...&token=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const invId = params.get('inviteId');
+    const tok = params.get('token');
+    if (invId) {
+      setManualInviteId(invId);
+      if (tok) {
+        setManualInviteToken(tok);
+        setInviteTokensById((prev) => ({ ...prev, [invId]: tok }));
+      }
+    }
+  }, []);
+
+  const needsEmailVerification = Boolean(firebaseUser) && !isEmailVerified && !isLocalWorkspace;
+  const needsOnboarding =
+    !needsEmailVerification &&
+    (Boolean(firebaseUser) || isLocalWorkspace || showWizardOnly) &&
+    !rede;
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,7 +123,7 @@ export const AuthAndOnboardingPage: React.FC = () => {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('operation-not-allowed')) {
         setAuthError(
-          'Provedor E-mail/Senha ainda não ativado no Firebase Console (Authentication → Sign-in method → Email/Password). Use o Login com Google ou clique em "Acessar Ambiente com Dados Reais" abaixo.'
+          'Provedor E-mail/Senha ainda não ativado no Firebase Console (Authentication → Sign-in method → Email/Password). Use o Login com Google ou acesse o Ambiente de Demonstração Isolado.'
         );
       } else {
         setAuthError(`Não foi possível autenticar: ${msg}`);
@@ -98,10 +141,66 @@ export const AuthAndOnboardingPage: React.FC = () => {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setAuthError(
-        `Falha ao abrir popup do Google (${msg}). Você também pode iniciar imediatamente clicando em "Acessar Ambiente com Dados Reais" abaixo.`
+        `Falha ao abrir popup do Google (${msg}). Você também pode explorar o Ambiente de Demonstração Isolado abaixo.`
       );
     } finally {
       setAuthSubmitting(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setVerifyError(null);
+    setVerifyNotice(null);
+    setResendBusy(true);
+    try {
+      await resendVerificationEmail();
+      setVerifyNotice(
+        `Novo link de confirmação enviado com sucesso para ${firebaseUser?.email}. Verifique sua caixa de entrada e pasta de spam.`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setVerifyError(`Não foi possível reenviar o e-mail de confirmação: ${msg}`);
+    } finally {
+      setResendBusy(false);
+    }
+  };
+
+  const handleCheckVerificationStatus = async () => {
+    setVerifyError(null);
+    setVerifyNotice(null);
+    setVerifyBusy(true);
+    try {
+      const verified = await refreshEmailVerification();
+      if (verified) {
+        setVerifyNotice('E-mail confirmado com sucesso! Liberando acesso ao Gasto Polo...');
+      } else {
+        setVerifyError(
+          'Seu endereço de e-mail ainda consta como não confirmado. Clique no link enviado ao seu e-mail e tente verificar novamente.'
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setVerifyError(`Erro ao consultar status de verificação: ${msg}`);
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
+
+  const handleAcceptInvite = async (conviteId: string, tokenValue: string) => {
+    setInviteError(null);
+    setInviteSuccess(null);
+    if (!conviteId.trim() || !tokenValue.trim()) {
+      setInviteError('Informe o código/token de uso único do convite para confirmar o vínculo.');
+      return;
+    }
+    setInviteBusyId(conviteId);
+    try {
+      await acceptInvite(conviteId.trim(), tokenValue.trim(), firebaseUser?.displayName || undefined);
+      setInviteSuccess('Convite aceito com sucesso! Sua conta foi vinculada à Rede.');
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setInviteBusyId(null);
     }
   };
 
@@ -145,28 +244,253 @@ export const AuthAndOnboardingPage: React.FC = () => {
     }
   };
 
+  // Screen 1: Dedicated Email Verification Required View
+  if (needsEmailVerification) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex items-center justify-center py-12 px-4">
+        <div className="max-w-lg w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 space-y-6">
+          <div className="flex items-center gap-3">
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400">
+              <MailCheck className="w-6 h-6" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+                Confirme seu Endereço de E-mail
+              </h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Verificação obrigatória de segurança antes de acessar ou gravar dados
+              </p>
+            </div>
+          </div>
+
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+            <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
+              Enviamos um link de confirmação para seu e-mail. Confirme seu endereço para continuar
+              utilizando o Gasto Polo.
+            </p>
+            <div className="text-xs text-slate-600 dark:text-slate-300 pt-1">
+              Endereço aguardando confirmação:{' '}
+              <strong className="font-mono text-slate-900 dark:text-emerald-400">
+                {firebaseUser?.email}
+              </strong>
+            </div>
+          </div>
+
+          {verifyNotice && (
+            <div
+              role="status"
+              className="p-3.5 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs text-emerald-800 dark:text-emerald-200"
+            >
+              {verifyNotice}
+            </div>
+          )}
+
+          {verifyError && (
+            <div
+              role="alert"
+              className="p-3.5 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300"
+            >
+              {verifyError}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            <button
+              type="button"
+              disabled={verifyBusy}
+              onClick={handleCheckVerificationStatus}
+              className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors"
+            >
+              <RefreshCw className={`w-4 h-4 ${verifyBusy ? 'animate-spin' : ''}`} />
+              {verifyBusy
+                ? 'Verificando status da conta...'
+                : 'Já confirmei meu e-mail — Verificar status agora'}
+            </button>
+
+            <button
+              type="button"
+              disabled={resendBusy}
+              onClick={handleResendVerification}
+              className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-semibold text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+            >
+              <Send className="w-4 h-4" />
+              {resendBusy ? 'Reenviando link...' : 'Reenviar e-mail de confirmação'}
+            </button>
+          </div>
+
+          <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+            <span className="text-[11px] text-slate-500">
+              Deseja entrar com outra conta verificada?
+            </span>
+            <button
+              type="button"
+              onClick={logout}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:underline"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Sair da conta
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Screen 2: Onboarding & Pending Invite Acceptance (Verified User without active Rede)
   if (needsOnboarding) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 py-10 px-4">
         <div className="max-w-3xl mx-auto space-y-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold tracking-tight">
-                Configuração Inicial da Rede (Onboarding)
+                {myPendingInvites.length > 0
+                  ? 'Aceitar Convite ou Criar Nova Rede'
+                  : 'Configuração Inicial da Rede (Onboarding)'}
               </h1>
               <p className="text-sm text-slate-600 dark:text-slate-400">
-                Cadastre sua Rede, o primeiro polo, convide a equipe e carregue as 11 categorias
-                padrão automaticamente.
+                {firebaseUser?.email
+                  ? `Autenticado e verificado como ${firebaseUser.email}`
+                  : 'Ambiente de Demonstração Local Isolado'}
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => enterInteractiveWorkspace(true)}
-              className="px-3.5 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap"
-            >
-              Pular e Abrir com Dados Demo
-            </button>
+            <div className="flex items-center gap-2">
+              {isLocalWorkspace && (
+                <button
+                  type="button"
+                  onClick={() => enterInteractiveWorkspace(true)}
+                  className="px-3.5 py-2 text-xs font-medium text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 transition-colors whitespace-nowrap"
+                >
+                  Abrir Demo com Dados de Exemplo
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={logout}
+                className="px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-100"
+              >
+                Sair
+              </button>
+            </div>
           </div>
+
+          {/* Real Pending Invitations Section */}
+          {!isLocalWorkspace && (
+            <div className="bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800 rounded-xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-5 h-5 text-emerald-600" />
+                  <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                    Convites Pendentes para {firebaseUser?.email}
+                  </h2>
+                </div>
+                <span className="text-xs font-mono text-slate-500">
+                  {myPendingInvites.length} encontrado(s)
+                </span>
+              </div>
+
+              {inviteError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300">
+                  {inviteError}
+                </div>
+              )}
+
+              {inviteSuccess && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-lg text-xs text-emerald-800 dark:text-emerald-200">
+                  {inviteSuccess}
+                </div>
+              )}
+
+              {myPendingInvites.length > 0 ? (
+                <div className="space-y-3">
+                  {myPendingInvites.map((conv) => (
+                    <div
+                      key={conv.id}
+                      className="p-4 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-lg space-y-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-bold text-slate-900 dark:text-white">
+                            Rede: {conv.redeNome}
+                          </div>
+                          <div className="text-xs text-slate-600 dark:text-slate-300">
+                            Perfil atribuído pelo Admin:{' '}
+                            <strong className="uppercase text-emerald-600 dark:text-emerald-400">
+                              {conv.perfil}
+                            </strong>{' '}
+                            · Expira em: {formatDateBR(conv.expiraEm)}
+                          </div>
+                        </div>
+                        <span className="text-[11px] font-mono text-slate-500">ID: {conv.id}</span>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          aria-label={`Token do convite ${conv.id}`}
+                          placeholder="Cole o código/token de uso único enviado pelo Administrador"
+                          value={inviteTokensById[conv.id] || ''}
+                          onChange={(e) =>
+                            setInviteTokensById((prev) => ({
+                              ...prev,
+                              [conv.id]: e.target.value,
+                            }))
+                          }
+                          className="flex-1 px-3 py-2 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                        />
+                        <button
+                          type="button"
+                          disabled={inviteBusyId === conv.id}
+                          onClick={() =>
+                            handleAcceptInvite(conv.id, inviteTokensById[conv.id] || '')
+                          }
+                          className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg whitespace-nowrap"
+                        >
+                          {inviteBusyId === conv.id
+                            ? 'Vinculando UID...'
+                            : 'Aceitar Convite e Entrar na Rede'}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
+                    Nenhum convite pendente listado automaticamente para{' '}
+                    <strong>{firebaseUser?.email}</strong>. Se você recebeu um ID e Token de
+                    Convite de um Administrador, informe abaixo para aceitar:
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      type="text"
+                      aria-label="ID do Convite"
+                      placeholder="ID do Convite (ex: conv-...)"
+                      value={manualInviteId}
+                      onChange={(e) => setManualInviteId(e.target.value)}
+                      className="px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                    />
+                    <input
+                      type="text"
+                      aria-label="Token de uso único do Convite"
+                      placeholder="Token de uso único (32 hex)"
+                      value={manualInviteToken}
+                      onChange={(e) => setManualInviteToken(e.target.value)}
+                      className="px-3 py-2 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                    />
+                    <button
+                      type="button"
+                      disabled={Boolean(inviteBusyId)}
+                      onClick={() => handleAcceptInvite(manualInviteId, manualInviteToken)}
+                      className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-emerald-600 rounded-lg"
+                    >
+                      Validar e Aceitar Convite
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {onboardingError && (
             <div className="p-3.5 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 rounded-lg text-xs text-red-700 dark:text-red-300">
@@ -181,7 +505,7 @@ export const AuthAndOnboardingPage: React.FC = () => {
             {/* Step 1: Rede */}
             <section className="space-y-4">
               <h2 className="text-base font-semibold text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 pb-2">
-                01. Dados da Rede e Parâmetros de Governança
+                01. Criar Nova Rede (Você será vinculado como Primeiro Administrador)
               </h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
@@ -293,12 +617,19 @@ export const AuthAndOnboardingPage: React.FC = () => {
               </div>
             </section>
 
-            {/* Step 3: Convite de Usuários */}
+            {/* Step 3: Convite de Usuários (Gera Convites Pendentes com Token SHA-256) */}
             <section className="space-y-4">
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-                  03. Convite de Usuários e Perfis de Acesso
-                </h2>
+                <div>
+                  <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                    03. Emitir Convites Pendentes para a Equipe
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Gera convites seguros com token de uso único (expiração de 7 dias). O vínculo
+                    definitivo ocorre somente quando o convidado autentica seu e-mail e aceita o
+                    convite.
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={handleAddConvidado}
@@ -451,14 +782,14 @@ export const AuthAndOnboardingPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Instant Interactive Access Box */}
+          {/* Isolated Demo Environment Box */}
           <div className="p-4 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-xl space-y-3">
             <div className="text-xs font-semibold text-slate-900 dark:text-white">
-              Acesso Rápido ao Ambiente Funcional
+              Ambiente de Demonstração Local (Isolado do Banco de Produção)
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400">
-              Explore imediatamente a plataforma com 3 polos e 6 meses de histórico realista, ou
-              inicie o passo a passo de cadastro de uma nova Rede do zero.
+              Explore a plataforma em modo de demonstração isolado com 3 polos e 6 meses de
+              histórico realista, sem acessar ou alterar dados reais do Cloud Firestore.
             </p>
             <div className="flex flex-wrap gap-2.5">
               <button
@@ -467,7 +798,7 @@ export const AuthAndOnboardingPage: React.FC = () => {
                 className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition-colors whitespace-nowrap"
               >
                 <Database className="w-4 h-4" />
-                Acessar Rede com Dados de Exemplo
+                Acessar Rede com Dados de Exemplo (Modo Demo)
               </button>
               <button
                 type="button"
@@ -478,7 +809,7 @@ export const AuthAndOnboardingPage: React.FC = () => {
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
               >
                 <UserPlus className="w-4 h-4" />
-                Criar Nova Rede (Onboarding)
+                Simular Onboarding (Modo Demo)
               </button>
             </div>
           </div>
@@ -516,7 +847,7 @@ export const AuthAndOnboardingPage: React.FC = () => {
                     : 'text-slate-600 dark:text-slate-400'
                 }`}
               >
-                Criar Conta Admin
+                Criar Conta
               </button>
             </div>
 
@@ -599,7 +930,7 @@ export const AuthAndOnboardingPage: React.FC = () => {
                   ? 'Autenticando...'
                   : authTab === 'login'
                   ? 'Entrar com E-mail e Senha'
-                  : 'Cadastrar e Criar Minha Rede'}
+                  : 'Cadastrar e Receber E-mail de Confirmação'}
               </button>
             </form>
 
@@ -620,9 +951,8 @@ export const AuthAndOnboardingPage: React.FC = () => {
           </div>
 
           <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
-            Nota Firebase Auth: O login Google já está provisionado automaticamente. Para usar
-            E-mail/Senha no Cloud Firestore, certifique-se de habilitar o provedor{' '}
-            <em>Email/Password</em> no Console do Firebase.
+            Nota Firebase Auth: O login Google já está provisionado automaticamente. No cadastro por
+            E-mail/Senha, um link de confirmação é enviado automaticamente antes de liberar gravações.
           </p>
         </div>
       </div>

@@ -5,6 +5,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendEmailVerification,
   signOut,
   updateProfile,
 } from 'firebase/auth';
@@ -17,7 +18,6 @@ import {
   query,
   setDoc,
   updateDoc,
-  deleteDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
@@ -28,6 +28,7 @@ import {
   Auditoria,
   Campanha,
   Categoria,
+  ConviteUsuario,
   Fornecedor,
   ItemCatalogo,
   Lancamento,
@@ -45,14 +46,19 @@ import {
   DEFAULT_REDE_CONFIG,
   detectWasteAlerts,
   determineInitialStatus,
+  generateInviteToken,
+  getCurrentMonthSaoPaulo,
+  hashInviteTokenSha256,
+  isInviteExpired,
 } from '../utils/financeRules';
 import { buildDemoDataset } from '../utils/demoData';
 
-const LOCAL_STORAGE_KEY = 'gastopolo_workspace_v1';
+const LOCAL_STORAGE_KEY = 'gastopolo_demo_workspace_v2';
 
 interface LocalWorkspaceState {
   rede: Rede | null;
   usuarios: UsuarioRede[];
+  convites: ConviteUsuario[];
   polos: Polo[];
   categorias: Categoria[];
   fornecedores: Fornecedor[];
@@ -67,6 +73,7 @@ interface LocalWorkspaceState {
 interface AppContextValue {
   // Auth & Tenant State
   firebaseUser: User | null;
+  isEmailVerified: boolean;
   authLoading: boolean;
   dataLoading: boolean;
   isLocalWorkspace: boolean;
@@ -83,8 +90,11 @@ interface AppContextValue {
   darkMode: boolean;
   toggleDarkMode: () => void;
 
-  // Collections (Filtered by RBAC polo isolation!)
+  // Collections (Filtered by RBAC polo isolation)
   usuarios: UsuarioRede[];
+  convites: ConviteUsuario[];
+  myPendingInvites: ConviteUsuario[];
+  lastIssuedInviteTokens: Record<string, string>;
   allPolos: Polo[];
   visiblePolos: Polo[];
   categorias: Categoria[];
@@ -104,14 +114,16 @@ interface AppContextValue {
   canEditLaunch: (l: Lancamento) => boolean;
   hasDemoData: boolean;
 
-  // Auth Actions
+  // Auth & Email Verification Actions
   loginWithGoogle: () => Promise<void>;
   loginWithEmail: (email: string, pass: string) => Promise<void>;
   registerWithEmail: (nome: string, email: string, pass: string) => Promise<void>;
+  resendVerificationEmail: () => Promise<void>;
+  refreshEmailVerification: () => Promise<boolean>;
   enterInteractiveWorkspace: (withDemoData?: boolean) => Promise<void>;
   logout: () => Promise<void>;
 
-  // Onboarding & Demo Data Actions
+  // Onboarding, Invites & Demo Data Actions
   completeOnboarding: (params: {
     nomeRede: string;
     rotuloTamanho: string;
@@ -120,6 +132,15 @@ interface AppContextValue {
     convidados: Array<{ nome: string; email: string; perfil: PerfilUsuario }>;
     carregarDemo: boolean;
   }) => Promise<void>;
+  createInvite: (params: {
+    nome: string;
+    email: string;
+    perfil: PerfilUsuario;
+    poloIds: string[];
+    diasValidade?: number;
+  }) => Promise<{ convite: ConviteUsuario; rawToken: string }>;
+  cancelInvite: (conviteId: string) => Promise<void>;
+  acceptInvite: (conviteId: string, rawToken: string, nomeConfirmado?: string) => Promise<void>;
   loadDemoData: () => Promise<void>;
   removeDemoData: () => Promise<void>;
 
@@ -171,33 +192,29 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${rand}`;
 }
 
-function getDefaultCurrentMonth(): string {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-}
-
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [isEmailVerified, setIsEmailVerified] = useState<boolean>(false);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [dataLoading, setDataLoading] = useState<boolean>(false);
-  const [isLocalWorkspace, setIsLocalWorkspace] = useState<boolean>(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('autostart') === '1') return true;
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    return Boolean(saved);
-  });
+  // Demo mode is NEVER auto-activated by URL params or localStorage; requires explicit user action
+  const [isLocalWorkspace, setIsLocalWorkspace] = useState<boolean>(false);
 
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     return localStorage.getItem('gastopolo_theme') === 'dark';
   });
 
-  const [selectedMonth, setSelectedMonth] = useState<string>(getDefaultCurrentMonth);
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => getCurrentMonthSaoPaulo());
   const [selectedPoloId, setSelectedPoloId] = useState<string | 'ALL'>('ALL');
-  const [activePersonaId, setActivePersonaId] = useState<string | null>(null);
+  const [activePersonaId, setActivePersonaIdState] = useState<string | null>(null);
 
   // Domain states
   const [rede, setRede] = useState<Rede | null>(null);
+  const [ownMemberProfile, setOwnMemberProfile] = useState<UsuarioRede | null>(null);
   const [usuarios, setUsuarios] = useState<UsuarioRede[]>([]);
+  const [convites, setConvites] = useState<ConviteUsuario[]>([]);
+  const [myPendingInvites, setMyPendingInvites] = useState<ConviteUsuario[]>([]);
+  const [lastIssuedInviteTokens, setLastIssuedInviteTokens] = useState<Record<string, string>>({});
   const [polos, setPolos] = useState<Polo[]>([]);
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
@@ -207,6 +224,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [campanhas, setCampanhas] = useState<Campanha[]>([]);
   const [planosAcao, setPlanosAcao] = useState<PlanoAcao[]>([]);
   const [auditoria, setAuditoria] = useState<Auditoria[]>([]);
+
+  // Persona switching is strictly restricted to isolated Demo Mode (isLocalWorkspace)
+  const setActivePersonaId = (uid: string | null) => {
+    if (!isLocalWorkspace) {
+      setActivePersonaIdState(null);
+      return;
+    }
+    setActivePersonaIdState(uid);
+  };
 
   // Apply Dark Mode class on <html>
   useEffect(() => {
@@ -222,125 +248,159 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const toggleDarkMode = () => setDarkMode((prev) => !prev);
 
-  // Sync LocalWorkspace state to localStorage when in local workspace mode
   const persistLocalState = (next: LocalWorkspaceState) => {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(next));
-  };
-
-  // Initialize Local Workspace or ?autostart=1
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const savedRaw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (savedRaw) {
-      try {
-        const parsed = JSON.parse(savedRaw) as LocalWorkspaceState;
-        if (parsed.rede) {
-          setRede(parsed.rede);
-          setUsuarios(parsed.usuarios || []);
-          setPolos(parsed.polos || []);
-          setCategorias(parsed.categorias || []);
-          setFornecedores(parsed.fornecedores || []);
-          setItens(parsed.itens || []);
-          setLancamentos(parsed.lancamentos || []);
-          setOrcamentos(parsed.orcamentos || []);
-          setCampanhas(parsed.campanhas || []);
-          setPlanosAcao(parsed.planosAcao || []);
-          setAuditoria(parsed.auditoria || []);
-        }
-      } catch (e) {
-        console.error('Failed to parse saved workspace:', e);
-      }
-    } else if (params.get('autostart') === '1') {
-      // Automatically seed full demo workspace for instant evaluation
-      const now = new Date().toISOString();
-      const redeId = 'rede-educar-brasil';
-      const adminUid = 'admin-demo-uid';
-      const baseMonth = getDefaultCurrentMonth();
-      const demo = buildDemoDataset(redeId, adminUid, baseMonth, []);
-      const initialRede: Rede = {
-        id: redeId,
-        nome: 'Rede Educar Brasil (Multi-Polos)',
-        criadoPor: adminUid,
-        criadoEm: now,
-        atualizadoEm: now,
-        config: DEFAULT_REDE_CONFIG,
-      };
-      const adminUser: UsuarioRede = {
-        id: adminUid,
-        uid: adminUid,
-        redeId,
-        nome: 'Alisson Araujo (Admin da Rede)',
-        email: 'admin@gastopolo.com.br',
-        perfil: 'admin',
-        poloIds: demo.polos.map((p) => p.id),
-        ativo: true,
-        criadoEm: now,
-        atualizadoEm: now,
-      };
-      const allUsers = [adminUser, ...demo.usuariosExtras];
-      setRede(initialRede);
-      setUsuarios(allUsers);
-      setPolos(demo.polos);
-      setCategorias(demo.categorias);
-      setFornecedores(demo.fornecedores);
-      setItens(demo.itens);
-      setLancamentos(demo.lancamentos);
-      setOrcamentos(demo.orcamentos);
-      setCampanhas(demo.campanhas);
-      setPlanosAcao(demo.planosAcao);
-      setAuditoria(demo.auditoria);
-      persistLocalState({
-        rede: initialRede,
-        usuarios: allUsers,
-        polos: demo.polos,
-        categorias: demo.categorias,
-        fornecedores: demo.fornecedores,
-        itens: demo.itens,
-        lancamentos: demo.lancamentos,
-        orcamentos: demo.orcamentos,
-        campanhas: demo.campanhas,
-        planosAcao: demo.planosAcao,
-        auditoria: demo.auditoria,
-      });
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(next));
+    } catch (e) {
+      console.warn('Unable to persist local demo state:', e);
     }
-  }, []);
+  };
 
   // Listen to Firebase Auth state
   useEffect(() => {
+    let isMounted = true;
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!isMounted) return;
       setFirebaseUser(user);
+      setIsEmailVerified(Boolean(user?.emailVerified));
+
       if (!user) {
+        setOwnMemberProfile(null);
+        setMyPendingInvites([]);
         setAuthLoading(false);
         return;
       }
 
+      // Real authenticated Firebase user disables isolated local demo workspace
       setIsLocalWorkspace(false);
+      setActivePersonaIdState(null);
+
+      if (!user.emailVerified) {
+        setRede(null);
+        setOwnMemberProfile(null);
+        setDataLoading(false);
+        setAuthLoading(false);
+        return;
+      }
+
       setDataLoading(true);
       try {
         const userRedeDocRef = doc(db, 'userRedes', user.uid);
         const userRedeSnap = await getDoc(userRedeDocRef);
+        if (!isMounted) return;
+
         if (userRedeSnap.exists()) {
           const { redeId } = userRedeSnap.data() as { redeId: string };
-          const redeSnap = await getDoc(doc(db, 'redes', redeId));
+          const [redeSnap, memberSnap] = await Promise.all([
+            getDoc(doc(db, 'redes', redeId)),
+            getDoc(doc(db, 'redes', redeId, 'usuarios', user.uid)),
+          ]);
+          if (!isMounted) return;
+          if (memberSnap.exists()) {
+            const memberData = {
+              id: memberSnap.id,
+              ...(memberSnap.data() as Omit<UsuarioRede, 'id'>),
+            };
+            setOwnMemberProfile(memberData);
+            setUsuarios([memberData]);
+          } else {
+            setOwnMemberProfile(null);
+          }
           if (redeSnap.exists()) {
             setRede({ id: redeSnap.id, ...(redeSnap.data() as Omit<Rede, 'id'>) });
           }
+        } else {
+          setRede(null);
+          setOwnMemberProfile(null);
         }
       } catch (err) {
         console.warn('Initial tenant lookup:', err);
       } finally {
-        setDataLoading(false);
-        setAuthLoading(false);
+        if (isMounted) {
+          setDataLoading(false);
+          setAuthLoading(false);
+        }
       }
     });
-    return () => unsubscribe();
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
   }, []);
 
-  // Subscribe to Firestore subcollections when authenticated with Firebase & Rede exists
+  // Subscribe to pending invitations addressed to the authenticated, verified user's email
   useEffect(() => {
-    if (isLocalWorkspace || !firebaseUser || !rede?.id) return;
-    const redeId = rede.id;
+    if (isLocalWorkspace || !firebaseUser || !isEmailVerified || !firebaseUser.email) {
+      setMyPendingInvites([]);
+      return;
+    }
 
+    const normalizedEmail = firebaseUser.email.trim().toLowerCase();
+    const q = query(collection(db, 'convites'), where('email', '==', normalizedEmail));
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as Omit<ConviteUsuario, 'id'>) }))
+          .filter((c) => c.status === 'pendente' && !isInviteExpired(c.expiraEmMillis));
+        setMyPendingInvites(list);
+      },
+      (err) => {
+        console.warn('Pending invite lookup error:', err);
+      }
+    );
+
+    return () => unsub();
+  }, [isLocalWorkspace, firebaseUser, isEmailVerified]);
+
+  // Subscribe to the user's own member document in redes/{redeId}/usuarios/{uid}
+  useEffect(() => {
+    if (isLocalWorkspace || !firebaseUser || !isEmailVerified || !rede?.id) {
+      setOwnMemberProfile(null);
+      return;
+    }
+
+    const redeId = rede.id;
+    const memberRef = doc(db, 'redes', redeId, 'usuarios', firebaseUser.uid);
+    const unsub = onSnapshot(
+      memberRef,
+      (snap) => {
+        if (snap.exists()) {
+          const member: UsuarioRede = {
+            id: snap.id,
+            ...(snap.data() as Omit<UsuarioRede, 'id'>),
+          };
+          setOwnMemberProfile(member);
+          setUsuarios((prev) => {
+            const others = prev.filter((u) => u.uid !== member.uid);
+            return [member, ...others];
+          });
+        } else {
+          setOwnMemberProfile(null);
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, `redes/${redeId}/usuarios/${firebaseUser.uid}`)
+    );
+
+    return () => unsub();
+  }, [isLocalWorkspace, firebaseUser, isEmailVerified, rede?.id]);
+
+  // Subscribe to Firestore subcollections when authenticated, verified, & active member of Rede
+  useEffect(() => {
+    if (
+      isLocalWorkspace ||
+      !firebaseUser ||
+      !isEmailVerified ||
+      !rede?.id ||
+      !ownMemberProfile ||
+      !ownMemberProfile.ativo
+    ) {
+      return;
+    }
+
+    const redeId = rede.id;
+    const perfil = ownMemberProfile.perfil;
+    const userPoloIds = ownMemberProfile.poloIds || [];
     const unsubs: Array<() => void> = [];
 
     // Rede doc listener
@@ -356,24 +416,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
     );
 
-    const subcollections: Array<{
+    // Network-wide collections readable by all active members
+    const sharedCollections: Array<{
       name: string;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setter: React.Dispatch<React.SetStateAction<any[]>>;
     }> = [
-      { name: 'usuarios', setter: setUsuarios },
       { name: 'polos', setter: setPolos },
       { name: 'categorias', setter: setCategorias },
       { name: 'fornecedores', setter: setFornecedores },
       { name: 'itens', setter: setItens },
-      { name: 'lancamentos', setter: setLancamentos },
-      { name: 'orcamentos', setter: setOrcamentos },
-      { name: 'campanhas', setter: setCampanhas },
-      { name: 'planosAcao', setter: setPlanosAcao },
-      { name: 'auditoria', setter: setAuditoria },
     ];
 
-    for (const sub of subcollections) {
+    for (const sub of sharedCollections) {
       const q = query(collection(db, 'redes', redeId, sub.name), where('redeId', '==', redeId));
       unsubs.push(
         onSnapshot(
@@ -387,24 +442,141 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
+    // Admin or Gestor can list all network users and audit trail
+    if (perfil === 'admin' || perfil === 'gestor') {
+      const usersQ = query(collection(db, 'redes', redeId, 'usuarios'), where('redeId', '==', redeId));
+      unsubs.push(
+        onSnapshot(
+          usersQ,
+          (snap) => {
+            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<UsuarioRede, 'id'>) }));
+            setUsuarios(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, `redes/${redeId}/usuarios`)
+        )
+      );
+
+      const audQ = query(collection(db, 'redes', redeId, 'auditoria'), where('redeId', '==', redeId));
+      unsubs.push(
+        onSnapshot(
+          audQ,
+          (snap) => {
+            const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Auditoria, 'id'>) }));
+            setAuditoria(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, `redes/${redeId}/auditoria`)
+        )
+      );
+    } else {
+      setUsuarios([ownMemberProfile]);
+      setAuditoria([]);
+    }
+
+    // Only Admin can list network invitations
+    if (perfil === 'admin') {
+      const convQ = query(collection(db, 'convites'), where('redeId', '==', redeId));
+      unsubs.push(
+        onSnapshot(
+          convQ,
+          (snap) => {
+            const list = snap.docs.map((d) => ({
+              id: d.id,
+              ...(d.data() as Omit<ConviteUsuario, 'id'>),
+            }));
+            setConvites(list);
+          },
+          (err) => handleFirestoreError(err, OperationType.LIST, 'convites')
+        )
+      );
+    } else {
+      setConvites([]);
+    }
+
+    // Polo-scoped collections: Admin queries all polos; non-admin queries only authorized poloIds
+    const poloScopedCollections: Array<{
+      name: string;
+      includeAllKeyword?: boolean;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setter: React.Dispatch<React.SetStateAction<any[]>>;
+    }> = [
+      { name: 'lancamentos', setter: setLancamentos },
+      { name: 'orcamentos', setter: setOrcamentos },
+      { name: 'campanhas', includeAllKeyword: true, setter: setCampanhas },
+      { name: 'planosAcao', setter: setPlanosAcao },
+    ];
+
+    for (const sub of poloScopedCollections) {
+      if (perfil === 'admin') {
+        const q = query(collection(db, 'redes', redeId, sub.name), where('redeId', '==', redeId));
+        unsubs.push(
+          onSnapshot(
+            q,
+            (snap) => {
+              const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+              sub.setter(list);
+            },
+            (err) => handleFirestoreError(err, OperationType.LIST, `redes/${redeId}/${sub.name}`)
+          )
+        );
+      } else if (userPoloIds.length > 0) {
+        const allowedList = sub.includeAllKeyword
+          ? Array.from(new Set([...userPoloIds.slice(0, 9), 'ALL']))
+          : userPoloIds.slice(0, 10);
+        const q = query(
+          collection(db, 'redes', redeId, sub.name),
+          where('redeId', '==', redeId),
+          where('poloId', 'in', allowedList)
+        );
+        unsubs.push(
+          onSnapshot(
+            q,
+            (snap) => {
+              const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+              sub.setter(list);
+            },
+            (err) => handleFirestoreError(err, OperationType.LIST, `redes/${redeId}/${sub.name}`)
+          )
+        );
+      } else {
+        sub.setter([]);
+      }
+    }
+
     return () => {
       unsubs.forEach((u) => u());
     };
-  }, [isLocalWorkspace, firebaseUser, rede?.id]);
+  }, [
+    isLocalWorkspace,
+    firebaseUser,
+    isEmailVerified,
+    rede?.id,
+    ownMemberProfile?.uid,
+    ownMemberProfile?.ativo,
+    ownMemberProfile?.perfil,
+    JSON.stringify(ownMemberProfile?.poloIds || []),
+  ]);
 
-  // Resolve current active user profile (supports RBAC persona switching for testing isolation!)
+  // Resolve current active user profile:
+  // - In Production (!isLocalWorkspace): strictly by authenticated Firebase UID and valid network link. NEVER falls back to usuarios[0] or activePersonaId.
+  // - In Isolated Demo Mode (isLocalWorkspace): supports persona simulation for evaluating RBAC isolation.
   const currentUserProfile = useMemo<UsuarioRede | null>(() => {
-    if (usuarios.length === 0) return null;
-    if (activePersonaId) {
-      const persona = usuarios.find((u) => u.id === activePersonaId || u.uid === activePersonaId);
-      if (persona) return persona;
+    if (isLocalWorkspace) {
+      if (usuarios.length === 0) return null;
+      if (activePersonaId) {
+        const persona = usuarios.find((u) => u.id === activePersonaId || u.uid === activePersonaId);
+        if (persona) return persona;
+      }
+      return (
+        usuarios.find((u) => u.uid === 'admin-demo-uid' || u.uid === 'admin-local-uid') || null
+      );
     }
-    if (firebaseUser) {
-      const byUid = usuarios.find((u) => u.uid === firebaseUser.uid);
-      if (byUid) return byUid;
+
+    if (!firebaseUser || !rede) return null;
+    if (ownMemberProfile && ownMemberProfile.uid === firebaseUser.uid && ownMemberProfile.redeId === rede.id) {
+      return ownMemberProfile;
     }
-    return usuarios[0];
-  }, [usuarios, activePersonaId, firebaseUser]);
+    return usuarios.find((u) => u.uid === firebaseUser.uid && u.redeId === rede.id) || null;
+  }, [isLocalWorkspace, usuarios, activePersonaId, firebaseUser, rede, ownMemberProfile]);
 
   // Enforce RBAC polo isolation
   const visiblePolos = useMemo<Polo[]>(() => {
@@ -419,7 +591,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return currentUserProfile.poloIds;
   }, [currentUserProfile]);
 
-  // Reset selectedPoloId if user switched to a persona that doesn't have access to current selectedPoloId
+  // Reset selectedPoloId if user doesn't have access to current selectedPoloId
   useEffect(() => {
     if (!currentUserProfile) return;
     if (
@@ -533,7 +705,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, [polos, lancamentos, orcamentos]);
 
-  // Audit helper
+  // Audit helper (only writers create audit entries)
   const recordAudit = async (params: {
     redeId: string;
     entidade: string;
@@ -543,7 +715,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     antes?: unknown;
     depois?: unknown;
   }) => {
-    const uid = currentUserProfile?.uid || firebaseUser?.uid || 'admin-demo-uid';
+    const uid = isLocalWorkspace
+      ? currentUserProfile?.uid || 'admin-demo-uid'
+      : firebaseUser?.uid;
+    if (!uid) return null;
+
     const entry: Auditoria = {
       id: generateId('aud'),
       redeId: params.redeId,
@@ -558,10 +734,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     if (isLocalWorkspace) {
-      setAuditoria((prev) => {
-        const next = [entry, ...prev];
-        return next;
-      });
+      setAuditoria((prev) => [entry, ...prev]);
     } else {
       const path = `redes/${params.redeId}/auditoria/${entry.id}`;
       try {
@@ -580,6 +753,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     persistLocalState({
       rede,
       usuarios,
+      convites,
       polos,
       categorias,
       fornecedores,
@@ -594,6 +768,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     isLocalWorkspace,
     rede,
     usuarios,
+    convites,
     polos,
     categorias,
     fornecedores,
@@ -607,21 +782,85 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Auth handlers
   const loginWithGoogle = async () => {
-    await signInWithPopup(auth, googleProvider);
+    const cred = await signInWithPopup(auth, googleProvider);
+    setFirebaseUser(cred.user);
+    setIsEmailVerified(Boolean(cred.user.emailVerified));
   };
 
   const loginWithEmail = async (email: string, pass: string) => {
-    await signInWithEmailAndPassword(auth, email, pass);
+    const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
+    setFirebaseUser(cred.user);
+    setIsEmailVerified(Boolean(cred.user.emailVerified));
   };
 
   const registerWithEmail = async (nome: string, email: string, pass: string) => {
-    const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    if (cred.user && nome) {
-      await updateProfile(cred.user, { displayName: nome });
+    const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+    if (cred.user) {
+      if (nome.trim()) {
+        await updateProfile(cred.user, { displayName: nome.trim() });
+      }
+      await sendEmailVerification(cred.user);
+      setFirebaseUser(cred.user);
+      setIsEmailVerified(Boolean(cred.user.emailVerified));
     }
   };
 
+  const resendVerificationEmail = async () => {
+    if (!auth.currentUser) {
+      throw new Error('Nenhum usuário autenticado para reenviar o e-mail.');
+    }
+    await sendEmailVerification(auth.currentUser);
+  };
+
+  const refreshEmailVerification = async (): Promise<boolean> => {
+    if (!auth.currentUser) return false;
+    await auth.currentUser.reload();
+    const verified = Boolean(auth.currentUser.emailVerified);
+    if (verified) {
+      // Force token refresh so Firestore security rules immediately receive email_verified == true
+      await auth.currentUser.getIdToken(true);
+    }
+    setFirebaseUser(auth.currentUser);
+    setIsEmailVerified(verified);
+
+    if (verified) {
+      setDataLoading(true);
+      try {
+        const userRedeSnap = await getDoc(doc(db, 'userRedes', auth.currentUser.uid));
+        if (userRedeSnap.exists()) {
+          const { redeId } = userRedeSnap.data() as { redeId: string };
+          const [redeSnap, memberSnap] = await Promise.all([
+            getDoc(doc(db, 'redes', redeId)),
+            getDoc(doc(db, 'redes', redeId, 'usuarios', auth.currentUser.uid)),
+          ]);
+          if (memberSnap.exists()) {
+            const memberData = {
+              id: memberSnap.id,
+              ...(memberSnap.data() as Omit<UsuarioRede, 'id'>),
+            };
+            setOwnMemberProfile(memberData);
+            setUsuarios([memberData]);
+          }
+          if (redeSnap.exists()) {
+            setRede({ id: redeSnap.id, ...(redeSnap.data() as Omit<Rede, 'id'>) });
+          }
+        }
+      } catch (err) {
+        console.warn('Post-verification tenant lookup:', err);
+      } finally {
+        setDataLoading(false);
+      }
+    }
+
+    return verified;
+  };
+
   const enterInteractiveWorkspace = async (withDemoData = true) => {
+    if (firebaseUser) {
+      await signOut(auth);
+      setFirebaseUser(null);
+      setIsEmailVerified(false);
+    }
     const now = new Date().toISOString();
     const redeId = 'rede-educar-brasil';
     const adminUid = 'admin-demo-uid';
@@ -629,7 +868,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const initialRede: Rede = {
       id: redeId,
-      nome: 'Rede Educar Brasil (Multi-Polos)',
+      nome: 'Rede Educar Brasil (Ambiente Demo Isolado)',
       criadoPor: adminUid,
       criadoEm: now,
       atualizadoEm: now,
@@ -642,7 +881,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: adminUid,
         uid: adminUid,
         redeId,
-        nome: 'Alisson Araujo (Admin da Rede)',
+        nome: 'Administrador (Demo)',
         email: 'admin@gastopolo.com.br',
         perfil: 'admin',
         poloIds: demo.polos.map((p) => p.id),
@@ -652,7 +891,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       setIsLocalWorkspace(true);
       setRede(initialRede);
+      setOwnMemberProfile(adminUser);
       setUsuarios([adminUser, ...demo.usuariosExtras]);
+      setConvites([]);
       setPolos(demo.polos);
       setCategorias(demo.categorias);
       setFornecedores(demo.fornecedores);
@@ -662,11 +903,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCampanhas(demo.campanhas);
       setPlanosAcao(demo.planosAcao);
       setAuditoria(demo.auditoria);
-      setActivePersonaId(null);
+      setActivePersonaIdState(null);
     } else {
       setIsLocalWorkspace(true);
       setRede(null);
+      setOwnMemberProfile(null);
       setUsuarios([]);
+      setConvites([]);
       setPolos([]);
       setCategorias([]);
       setFornecedores([]);
@@ -676,6 +919,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCampanhas([]);
       setPlanosAcao([]);
       setAuditoria([]);
+      setActivePersonaIdState(null);
       localStorage.removeItem(LOCAL_STORAGE_KEY);
     }
   };
@@ -684,7 +928,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     setIsLocalWorkspace(false);
     setRede(null);
+    setOwnMemberProfile(null);
     setUsuarios([]);
+    setConvites([]);
+    setMyPendingInvites([]);
+    setLastIssuedInviteTokens({});
     setPolos([]);
     setCategorias([]);
     setFornecedores([]);
@@ -694,13 +942,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCampanhas([]);
     setPlanosAcao([]);
     setAuditoria([]);
-    setActivePersonaId(null);
+    setActivePersonaIdState(null);
     if (firebaseUser) {
       await signOut(auth);
     }
   };
 
-  // Onboarding
+  // Controlled Onboarding: creates Rede, First Admin (strictly bound to creator UID), first Polo, 11 categories, and secure pending Invites
   const completeOnboarding = async (params: {
     nomeRede: string;
     rotuloTamanho: string;
@@ -709,11 +957,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     convidados: Array<{ nome: string; email: string; perfil: PerfilUsuario }>;
     carregarDemo: boolean;
   }) => {
+    if (!isLocalWorkspace) {
+      if (!firebaseUser) {
+        throw new Error('Autenticação obrigatória para criar uma Rede.');
+      }
+      if (!isEmailVerified && !firebaseUser.emailVerified) {
+        throw new Error('Confirme seu endereço de e-mail antes de concluir o cadastro da Rede.');
+      }
+    }
+
     const now = new Date().toISOString();
     const redeId = generateId('rede');
-    const adminUid = firebaseUser?.uid || 'admin-local-uid';
-    const adminEmail = firebaseUser?.email || 'admin@gastopolo.com.br';
-    const adminNome = firebaseUser?.displayName || 'Administrador da Rede';
+    const adminUid = isLocalWorkspace ? 'admin-local-uid' : firebaseUser!.uid;
+    const adminEmail = isLocalWorkspace
+      ? 'admin@gastopolo.com.br'
+      : (firebaseUser!.email || '').trim().toLowerCase();
+    const adminNome = isLocalWorkspace
+      ? 'Administrador da Rede (Demo)'
+      : firebaseUser!.displayName || 'Administrador da Rede';
 
     const newConfig: RedeConfig = {
       ...DEFAULT_REDE_CONFIG,
@@ -771,36 +1032,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       atualizadoEm: now,
     };
 
-    const invitedUsers: UsuarioRede[] = params.convidados
-      .filter((c) => c.nome.trim() && c.email.trim())
-      .map((c) => {
-        const uid = generateId('usr');
-        return {
-          id: uid,
-          uid,
-          redeId,
-          nome: c.nome.trim(),
-          email: c.email.trim(),
-          perfil: c.perfil,
-          poloIds: [firstPoloId],
-          ativo: true,
-          criadoEm: now,
-          atualizadoEm: now,
-        };
+    // Build real pending invitations (NEVER fake usuarios with random UIDs!)
+    const expiraEmMillis = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    const expiraEm = new Date(expiraEmMillis).toISOString();
+    const pendingInvites: ConviteUsuario[] = [];
+    const generatedTokens: Record<string, string> = {};
+
+    for (const c of params.convidados) {
+      if (!c.nome.trim() || !c.email.trim()) continue;
+      const conviteId = generateId('conv');
+      const rawToken = generateInviteToken();
+      const tokenHash = await hashInviteTokenSha256(rawToken);
+      generatedTokens[conviteId] = rawToken;
+      pendingInvites.push({
+        id: conviteId,
+        redeId,
+        redeNome: newRede.nome,
+        nome: c.nome.trim(),
+        email: c.email.trim().toLowerCase(),
+        perfil: c.perfil,
+        poloIds: c.perfil === 'admin' ? allPolosList.map((p) => p.id) : [firstPoloId],
+        status: 'pendente',
+        tokenHash,
+        aceitoTokenHash: '',
+        expiraEm,
+        expiraEmMillis,
+        criadoPor: adminUid,
+        criadoEm: now,
+        atualizadoEm: now,
+        aceitoPorUid: '',
+        aceitoEm: '',
       });
+    }
 
-    const allUsuarios = [
-      adminUsuario,
-      ...invitedUsers,
-      ...(demoData ? demoData.usuariosExtras : []),
-    ];
-
-    if (isLocalWorkspace || !firebaseUser) {
-      setIsLocalWorkspace(true);
+    if (isLocalWorkspace) {
+      const localUsers = [
+        adminUsuario,
+        ...(demoData ? demoData.usuariosExtras : []),
+      ];
       setRede(newRede);
+      setOwnMemberProfile(adminUsuario);
       setPolos(allPolosList);
       setCategorias(defaultCategorias);
-      setUsuarios(allUsuarios);
+      setUsuarios(localUsers);
+      setConvites(pendingInvites);
+      setLastIssuedInviteTokens((prev) => ({ ...prev, ...generatedTokens }));
       setFornecedores(demoData ? demoData.fornecedores : []);
       setItens(demoData ? demoData.itens : []);
       setOrcamentos(demoData ? demoData.orcamentos : []);
@@ -824,37 +1100,43 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // Firestore persistence
+    // Firestore persistence: Atomic bootstrap of Rede + First Admin + UserRedeMap
     try {
+      const bootstrapBatch = writeBatch(db);
       const { id: _rId, ...redeDoc } = newRede;
-      await setDoc(doc(db, 'redes', redeId), redeDoc);
+      bootstrapBatch.set(doc(db, 'redes', redeId), redeDoc);
 
       const { id: _uId, ...adminDoc } = adminUsuario;
-      await setDoc(doc(db, 'redes', redeId, 'usuarios', adminUid), adminDoc);
+      bootstrapBatch.set(doc(db, 'redes', redeId, 'usuarios', adminUid), adminDoc);
 
-      await setDoc(doc(db, 'userRedes', adminUid), {
+      bootstrapBatch.set(doc(db, 'userRedes', adminUid), {
         uid: adminUid,
         redeId,
         email: adminEmail,
         perfil: 'admin',
         atualizadoEm: now,
       });
+      await bootstrapBatch.commit();
 
-      const batch = writeBatch(db);
+      const setupBatch = writeBatch(db);
       for (const p of allPolosList) {
         const { id, ...pDoc } = p;
-        batch.set(doc(db, 'redes', redeId, 'polos', id), pDoc);
+        setupBatch.set(doc(db, 'redes', redeId, 'polos', id), pDoc);
       }
       for (const c of defaultCategorias) {
         const { id, ...cDoc } = c;
-        batch.set(doc(db, 'redes', redeId, 'categorias', id), cDoc);
+        setupBatch.set(doc(db, 'redes', redeId, 'categorias', id), cDoc);
       }
-      for (const inv of invitedUsers) {
+      for (const inv of pendingInvites) {
         const { id, ...invDoc } = inv;
-        batch.set(doc(db, 'redes', redeId, 'usuarios', id), invDoc);
+        setupBatch.set(doc(db, 'convites', id), invDoc);
       }
-      await batch.commit();
+      await setupBatch.commit();
 
+      setLastIssuedInviteTokens((prev) => ({ ...prev, ...generatedTokens }));
+      setOwnMemberProfile(adminUsuario);
+      setUsuarios([adminUsuario]);
+      setConvites(pendingInvites);
       setRede(newRede);
 
       if (params.carregarDemo) {
@@ -865,6 +1147,205 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Real User Invitation Issuance (Admin only)
+  const createInvite = async (params: {
+    nome: string;
+    email: string;
+    perfil: PerfilUsuario;
+    poloIds: string[];
+    diasValidade?: number;
+  }): Promise<{ convite: ConviteUsuario; rawToken: string }> => {
+    if (!rede) throw new Error('Nenhuma rede ativa.');
+    if (!canManageNetwork) {
+      throw new Error('Apenas o Administrador da Rede pode emitir convites de usuários.');
+    }
+
+    const cleanNome = params.nome.trim();
+    const cleanEmail = params.email.trim().toLowerCase();
+    if (!cleanNome || !cleanEmail) {
+      throw new Error('Informe o nome e o e-mail do usuário convidado.');
+    }
+
+    const now = new Date().toISOString();
+    const dias = params.diasValidade && params.diasValidade > 0 ? params.diasValidade : 7;
+    const expiraEmMillis = Date.now() + dias * 24 * 60 * 60 * 1000;
+    const expiraEm = new Date(expiraEmMillis).toISOString();
+    const conviteId = generateId('conv');
+    const rawToken = generateInviteToken();
+    const tokenHash = await hashInviteTokenSha256(rawToken);
+    const adminUid = isLocalWorkspace
+      ? currentUserProfile?.uid || 'admin-demo-uid'
+      : firebaseUser!.uid;
+
+    const assignedPolos =
+      params.perfil === 'admin' ? polos.map((p) => p.id) : params.poloIds;
+
+    const convite: ConviteUsuario = {
+      id: conviteId,
+      redeId: rede.id,
+      redeNome: rede.nome,
+      nome: cleanNome,
+      email: cleanEmail,
+      perfil: params.perfil,
+      poloIds: assignedPolos,
+      status: 'pendente',
+      tokenHash,
+      aceitoTokenHash: '',
+      expiraEm,
+      expiraEmMillis,
+      criadoPor: adminUid,
+      criadoEm: now,
+      atualizadoEm: now,
+      aceitoPorUid: '',
+      aceitoEm: '',
+    };
+
+    if (isLocalWorkspace) {
+      setConvites((prev) => [convite, ...prev]);
+    } else {
+      const { id: _id, ...docData } = convite;
+      try {
+        await setDoc(doc(db, 'convites', conviteId), docData);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, `convites/${conviteId}`);
+      }
+    }
+
+    setLastIssuedInviteTokens((prev) => ({ ...prev, [conviteId]: rawToken }));
+
+    await recordAudit({
+      redeId: rede.id,
+      entidade: 'Convite',
+      entidadeId: conviteId,
+      acao: 'criar',
+      resumo: `Convite pendente emitido para ${cleanNome} (${cleanEmail}) com perfil ${params.perfil.toUpperCase()}`,
+      depois: { email: cleanEmail, perfil: params.perfil, poloIds: assignedPolos, expiraEm },
+    });
+
+    return { convite, rawToken };
+  };
+
+  const cancelInvite = async (conviteId: string) => {
+    if (!rede || !canManageNetwork) return;
+    const existing = convites.find((c) => c.id === conviteId);
+    if (!existing || existing.status !== 'pendente') return;
+    const now = new Date().toISOString();
+
+    if (isLocalWorkspace) {
+      setConvites((prev) =>
+        prev.map((c) => (c.id === conviteId ? { ...c, status: 'cancelado', atualizadoEm: now } : c))
+      );
+    } else {
+      try {
+        await updateDoc(doc(db, 'convites', conviteId), {
+          status: 'cancelado',
+          atualizadoEm: now,
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `convites/${conviteId}`);
+      }
+    }
+
+    await recordAudit({
+      redeId: rede.id,
+      entidade: 'Convite',
+      entidadeId: conviteId,
+      acao: 'excluir',
+      resumo: `Convite para ${existing.email} cancelado pelo Administrador`,
+      antes: { status: existing.status },
+      depois: { status: 'cancelado' },
+    });
+  };
+
+  // Real Invite Acceptance: verifies email match, expiration, and single-use SHA-256 tokenHash, then atomically binds real Firebase UID
+  const acceptInvite = async (
+    conviteId: string,
+    rawToken: string,
+    nomeConfirmado?: string
+  ) => {
+    if (!firebaseUser) {
+      throw new Error('Faça login ou crie sua conta antes de aceitar o convite.');
+    }
+    if (!isEmailVerified && !firebaseUser.emailVerified) {
+      throw new Error('Confirme seu endereço de e-mail antes de aceitar o convite.');
+    }
+
+    const userEmail = (firebaseUser.email || '').trim().toLowerCase();
+    const submittedHash = await hashInviteTokenSha256(rawToken);
+    const now = new Date().toISOString();
+
+    const snap = await getDoc(doc(db, 'convites', conviteId));
+    if (!snap.exists()) {
+      throw new Error('Convite não encontrado.');
+    }
+
+    const convite: ConviteUsuario = {
+      id: snap.id,
+      ...(snap.data() as Omit<ConviteUsuario, 'id'>),
+    };
+
+    if (convite.status !== 'pendente') {
+      throw new Error(`Este convite já foi ${convite.status} e não pode ser reutilizado.`);
+    }
+    if (isInviteExpired(convite.expiraEmMillis)) {
+      throw new Error('Este convite expirou. Solicite um novo convite ao Administrador da Rede.');
+    }
+    if (convite.email.trim().toLowerCase() !== userEmail) {
+      throw new Error(
+        `Este convite foi enviado exclusivamente para ${convite.email}. Você está autenticado como ${userEmail}.`
+      );
+    }
+    if (submittedHash !== convite.tokenHash) {
+      throw new Error(
+        'Código/token de convite inválido. Verifique o código de uso único fornecido pelo Administrador.'
+      );
+    }
+
+    const finalNome = (nomeConfirmado || firebaseUser.displayName || convite.nome).trim();
+    const newMemberDoc: Omit<UsuarioRede, 'id'> = {
+      uid: firebaseUser.uid,
+      redeId: convite.redeId,
+      nome: finalNome,
+      email: userEmail,
+      perfil: convite.perfil,
+      poloIds: convite.poloIds,
+      ativo: true,
+      conviteId: convite.id,
+      criadoEm: now,
+      atualizadoEm: now,
+    };
+
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'convites', convite.id), {
+        status: 'aceito',
+        aceitoPorUid: firebaseUser.uid,
+        aceitoEm: now,
+        aceitoTokenHash: submittedHash,
+        atualizadoEm: now,
+      });
+      batch.set(doc(db, 'redes', convite.redeId, 'usuarios', firebaseUser.uid), newMemberDoc);
+      batch.set(doc(db, 'userRedes', firebaseUser.uid), {
+        uid: firebaseUser.uid,
+        redeId: convite.redeId,
+        email: userEmail,
+        perfil: convite.perfil,
+        atualizadoEm: now,
+      });
+      await batch.commit();
+
+      const redeSnap = await getDoc(doc(db, 'redes', convite.redeId));
+      const fullMember: UsuarioRede = { id: firebaseUser.uid, ...newMemberDoc };
+      setOwnMemberProfile(fullMember);
+      setUsuarios([fullMember]);
+      if (redeSnap.exists()) {
+        setRede({ id: redeSnap.id, ...(redeSnap.data() as Omit<Rede, 'id'>) });
+      }
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `convites/${convite.id}`);
+    }
+  };
+
   const loadDemoDataForRede = async (
     targetRedeId: string,
     adminUid: string,
@@ -872,7 +1353,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ) => {
     const demo = buildDemoDataset(targetRedeId, adminUid, selectedMonth, currentCategorias);
 
-    if (isLocalWorkspace || !firebaseUser) {
+    if (isLocalWorkspace) {
       setPolos((prev) => {
         const nonDemo = prev.filter((p) => !p.demo);
         return [...nonDemo, ...demo.polos];
@@ -901,7 +1382,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    // Write demo docs to Firestore in batches of 400
+    // In production Firestore, never insert fake demo users into `usuarios` (keeps `usuarios` 100% bound to real Firebase Auth UIDs)
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const operations: Array<{ col: string; id: string; data: any }> = [];
@@ -911,9 +1392,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           operations.push({ col: 'categorias', id, data })
         );
       }
-      demo.usuariosExtras.forEach(({ id, ...data }) =>
-        operations.push({ col: 'usuarios', id, data })
-      );
       demo.fornecedores.forEach(({ id, ...data }) =>
         operations.push({ col: 'fornecedores', id, data })
       );
@@ -961,7 +1439,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const removeDemoData = async () => {
     if (!rede) return;
-    if (isLocalWorkspace || !firebaseUser) {
+    if (isLocalWorkspace) {
       setPolos((prev) => prev.filter((p) => !p.demo));
       setFornecedores((prev) => prev.filter((f) => !f.demo));
       setItens((prev) => prev.filter((i) => !i.demo));
@@ -1087,46 +1565,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  // Updates an EXISTING registered user's RBAC profile/polos/active status.
+  // Never creates arbitrary fake user records without an authenticated UID.
   const saveUsuario = async (
     payload: Omit<UsuarioRede, 'id' | 'uid' | 'redeId' | 'criadoEm' | 'atualizadoEm'>,
     id?: string
   ) => {
     if (!rede) return;
+    if (!id) {
+      throw new Error(
+        'Para adicionar um novo usuário, utilize o fluxo de Convite Seguro por E-mail.'
+      );
+    }
+    const existing = usuarios.find((u) => u.id === id || u.uid === id);
+    if (!existing) {
+      throw new Error('Usuário não encontrado na rede.');
+    }
+
     const now = new Date().toISOString();
-    const existing = id ? usuarios.find((u) => u.id === id) : undefined;
-    const userId = id || generateId('usr');
     const record: UsuarioRede = {
-      id: userId,
-      uid: existing?.uid || userId,
-      redeId: rede.id,
+      ...existing,
       nome: payload.nome.trim(),
-      email: payload.email.trim(),
       perfil: payload.perfil,
       poloIds: payload.poloIds,
       ativo: payload.ativo,
-      criadoEm: existing?.criadoEm || now,
       atualizadoEm: now,
     };
 
     if (isLocalWorkspace) {
-      setUsuarios((prev) =>
-        existing ? prev.map((u) => (u.id === userId ? record : u)) : [...prev, record]
-      );
+      setUsuarios((prev) => prev.map((u) => (u.id === existing.id ? record : u)));
     } else {
-      const { id: _id, ...docData } = record;
       try {
-        await setDoc(doc(db, 'redes', rede.id, 'usuarios', userId), docData);
+        await updateDoc(doc(db, 'redes', rede.id, 'usuarios', existing.uid), {
+          nome: record.nome,
+          perfil: record.perfil,
+          poloIds: record.poloIds,
+          ativo: record.ativo,
+          atualizadoEm: now,
+        });
       } catch (err) {
-        handleFirestoreError(err, existing ? OperationType.UPDATE : OperationType.CREATE, `redes/${rede.id}/usuarios/${userId}`);
+        handleFirestoreError(
+          err,
+          OperationType.UPDATE,
+          `redes/${rede.id}/usuarios/${existing.uid}`
+        );
       }
     }
 
     await recordAudit({
       redeId: rede.id,
       entidade: 'Usuario',
-      entidadeId: userId,
-      acao: existing ? 'editar' : 'criar',
-      resumo: `${existing ? 'Atualizado' : 'Convidado'} usuário ${record.nome} (${record.perfil}, Ativo: ${record.ativo ? 'Sim' : 'Não'})`,
+      entidadeId: existing.uid,
+      acao: 'editar',
+      resumo: `Atualizado usuário ${record.nome} (${record.perfil}, Ativo: ${record.ativo ? 'Sim' : 'Não'})`,
       antes: existing,
       depois: record,
     });
@@ -1266,12 +1757,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     existingId?: string
   ): Promise<Lancamento> => {
     if (!rede) throw new Error('Nenhuma rede ativa.');
+    if (!currentUserProfile) throw new Error('Perfil de usuário não autorizado.');
     const now = new Date().toISOString();
     const existing = existingId ? lancamentos.find((l) => l.id === existingId) : undefined;
     const lancId = existingId || generateId('lanc');
-    const uid = currentUserProfile?.uid || firebaseUser?.uid || 'admin-demo-uid';
+    const uid = isLocalWorkspace ? currentUserProfile.uid : firebaseUser!.uid;
 
-    // Rule: Value above approval limit stays pending and goes to Gestor
     const statusInicial = determineInitialStatus(
       payload.valorTotal,
       rede.config.limiteAprovacao
@@ -1593,7 +2084,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       titulo: payload.titulo.trim(),
       poloId: payload.poloId,
       categoriaId: payload.categoriaId || '',
-      responsavelUid: payload.responsavelUid || currentUserProfile?.uid || 'admin',
+      responsavelUid:
+        payload.responsavelUid || currentUserProfile?.uid || firebaseUser?.uid || 'admin',
       prazo: payload.prazo,
       economiaEstimada: Number(payload.economiaEstimada) || 0,
       status: payload.status,
@@ -1630,6 +2122,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     <AppContext.Provider
       value={{
         firebaseUser,
+        isEmailVerified,
         authLoading,
         dataLoading,
         isLocalWorkspace,
@@ -1644,6 +2137,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         darkMode,
         toggleDarkMode,
         usuarios,
+        convites,
+        myPendingInvites,
+        lastIssuedInviteTokens,
         allPolos: polos,
         visiblePolos,
         categorias,
@@ -1663,9 +2159,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         loginWithGoogle,
         loginWithEmail,
         registerWithEmail,
+        resendVerificationEmail,
+        refreshEmailVerification,
         enterInteractiveWorkspace,
         logout,
         completeOnboarding,
+        createInvite,
+        cancelInvite,
+        acceptInvite,
         loadDemoData,
         removeDemoData,
         updateRedeSettings,

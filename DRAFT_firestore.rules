@@ -7,20 +7,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // 2. Hardened Primitives
+    // 2. Hardened Primitives (Zero hardcoded email bypasses)
     function isSignedIn() {
       return request.auth != null;
     }
 
     function isVerified() {
-      return isSignedIn() && (
-        request.auth.token.email_verified == true ||
-        request.auth.token.email == "bottaraujoalisson@gmail.com"
-      );
-    }
-
-    function isBootstrappedAdmin() {
-      return isVerified() && request.auth.token.email == "bottaraujoalisson@gmail.com";
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
     function isValidId(id) {
@@ -36,8 +29,16 @@ service cloud.firestore {
     }
 
     // Relational Master Gate Helpers
+    function redePath(redeId) {
+      return /databases/$(database)/documents/redes/$(redeId);
+    }
+
     function userMemberPath(redeId, uid) {
       return /databases/$(database)/documents/redes/$(redeId)/usuarios/$(uid);
+    }
+
+    function convitePath(conviteId) {
+      return /databases/$(database)/documents/convites/$(conviteId);
     }
 
     function hasMemberDoc(redeId) {
@@ -49,48 +50,73 @@ service cloud.firestore {
     }
 
     function isActiveMember(redeId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true)
-      );
+      return hasMemberDoc(redeId) && getMemberData(redeId).ativo == true;
     }
 
     function isRedeAdmin(redeId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && getMemberData(redeId).perfil == 'admin')
-      );
+      return isActiveMember(redeId) && getMemberData(redeId).perfil == 'admin';
     }
 
     function isRedeGestorOrAdmin(redeId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && (
-          getMemberData(redeId).perfil == 'admin' ||
-          getMemberData(redeId).perfil == 'gestor'
-        ))
-      );
+      return isActiveMember(redeId) && getMemberData(redeId).perfil in ['admin', 'gestor'];
     }
 
     function isRedeWriter(redeId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && (
-          getMemberData(redeId).perfil == 'admin' ||
-          getMemberData(redeId).perfil == 'gestor' ||
-          getMemberData(redeId).perfil == 'operador'
-        ))
-      );
+      return isActiveMember(redeId) && getMemberData(redeId).perfil in ['admin', 'gestor', 'operador'];
     }
 
     function hasPoloAccess(redeId, poloId) {
-      return isSignedIn() && (
-        isRedeAdmin(redeId) ||
-        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && (
-          poloId == 'ALL' ||
-          poloId in getMemberData(redeId).poloIds
-        ))
+      return isActiveMember(redeId) && (
+        getMemberData(redeId).perfil == 'admin' ||
+        poloId == 'ALL' ||
+        poloId in getMemberData(redeId).poloIds
       );
+    }
+
+    // Verifies that userRedes/{uid} is strictly backed by an active member doc in redes/{redeId}/usuarios/{uid}
+    function hasValidMemberLinkForUserRede(redeId, perfil) {
+      return (
+        exists(userMemberPath(redeId, request.auth.uid)) &&
+        get(userMemberPath(redeId, request.auth.uid)).data.ativo == true &&
+        get(userMemberPath(redeId, request.auth.uid)).data.perfil == perfil
+      ) || (
+        existsAfter(userMemberPath(redeId, request.auth.uid)) &&
+        getAfter(userMemberPath(redeId, request.auth.uid)).data.ativo == true &&
+        getAfter(userMemberPath(redeId, request.auth.uid)).data.perfil == perfil
+      );
+    }
+
+    // Controlled First Administrator Bootstrap check
+    function isFirstAdminBootstrap(redeId, usuarioId) {
+      return request.auth.uid == usuarioId &&
+        incoming().uid == request.auth.uid &&
+        incoming().perfil == 'admin' &&
+        incoming().ativo == true &&
+        !('conviteId' in incoming()) &&
+        !exists(userMemberPath(redeId, request.auth.uid)) && (
+          (exists(redePath(redeId)) && get(redePath(redeId)).data.criadoPor == request.auth.uid) ||
+          (existsAfter(redePath(redeId)) && getAfter(redePath(redeId)).data.criadoPor == request.auth.uid)
+        );
+    }
+
+    // Atomic Single-Use Invite Acceptance check
+    function isInviteAcceptance(redeId, usuarioId) {
+      return request.auth.uid == usuarioId &&
+        incoming().uid == request.auth.uid &&
+        incoming().ativo == true &&
+        incoming().email == request.auth.token.email &&
+        'conviteId' in incoming() &&
+        isValidId(incoming().conviteId) &&
+        exists(convitePath(incoming().conviteId)) &&
+        get(convitePath(incoming().conviteId)).data.status == 'pendente' &&
+        get(convitePath(incoming().conviteId)).data.redeId == redeId &&
+        get(convitePath(incoming().conviteId)).data.email == request.auth.token.email &&
+        get(convitePath(incoming().conviteId)).data.expiraEmMillis > request.time.toMillis() &&
+        incoming().perfil == get(convitePath(incoming().conviteId)).data.perfil &&
+        incoming().poloIds == get(convitePath(incoming().conviteId)).data.poloIds &&
+        getAfter(convitePath(incoming().conviteId)).data.status == 'aceito' &&
+        getAfter(convitePath(incoming().conviteId)).data.aceitoPorUid == request.auth.uid &&
+        getAfter(convitePath(incoming().conviteId)).data.aceitoTokenHash == get(convitePath(incoming().conviteId)).data.tokenHash;
     }
 
     // 3. Entity Validation Blueprints
@@ -99,9 +125,39 @@ service cloud.firestore {
         data.keys().hasOnly(['uid', 'redeId', 'email', 'perfil', 'atualizadoEm']) &&
         data.uid is string && data.uid == userId && data.uid == request.auth.uid && data.uid.size() <= 128 &&
         isValidId(data.redeId) &&
-        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.email is string && data.email == request.auth.token.email && data.email.size() >= 3 && data.email.size() <= 254 &&
         data.perfil is string && data.perfil in ['admin', 'gestor', 'operador', 'leitor'] &&
         data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidConvite(data) {
+      return data.keys().hasAll([
+          'redeId', 'redeNome', 'nome', 'email', 'perfil', 'poloIds',
+          'status', 'tokenHash', 'aceitoTokenHash', 'expiraEm', 'expiraEmMillis',
+          'criadoPor', 'criadoEm', 'atualizadoEm', 'aceitoPorUid', 'aceitoEm'
+        ]) &&
+        data.keys().hasOnly([
+          'redeId', 'redeNome', 'nome', 'email', 'perfil', 'poloIds',
+          'status', 'tokenHash', 'aceitoTokenHash', 'expiraEm', 'expiraEmMillis',
+          'criadoPor', 'criadoEm', 'atualizadoEm', 'aceitoPorUid', 'aceitoEm'
+        ]) &&
+        isValidId(data.redeId) &&
+        data.redeNome is string && data.redeNome.size() >= 1 && data.redeNome.size() <= 120 &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.perfil is string && data.perfil in ['admin', 'gestor', 'operador', 'leitor'] &&
+        data.poloIds is list && data.poloIds.size() <= 50 &&
+        (data.poloIds.size() == 0 || (data.poloIds[0] is string && data.poloIds[0].size() <= 128)) &&
+        data.status is string && data.status in ['pendente', 'aceito', 'cancelado', 'expirado'] &&
+        data.tokenHash is string && data.tokenHash.size() == 64 && data.tokenHash.matches('^[a-f0-9]{64}$') &&
+        data.aceitoTokenHash is string && data.aceitoTokenHash.size() <= 64 &&
+        data.expiraEm is string && data.expiraEm.size() <= 40 &&
+        data.expiraEmMillis is number && data.expiraEmMillis > 0 &&
+        isValidId(data.criadoPor) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40 &&
+        data.aceitoPorUid is string && data.aceitoPorUid.size() <= 128 &&
+        data.aceitoEm is string && data.aceitoEm.size() <= 40;
     }
 
     function isValidRedeConfig(cfg) {
@@ -127,7 +183,7 @@ service cloud.firestore {
 
     function isValidUsuarioRede(data, redeId) {
       return data.keys().hasAll(['uid', 'redeId', 'nome', 'email', 'perfil', 'poloIds', 'ativo', 'criadoEm', 'atualizadoEm']) &&
-        data.keys().hasOnly(['uid', 'redeId', 'nome', 'email', 'perfil', 'poloIds', 'ativo', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['uid', 'redeId', 'nome', 'email', 'perfil', 'poloIds', 'ativo', 'conviteId', 'criadoEm', 'atualizadoEm']) &&
         isValidId(data.uid) &&
         data.redeId is string && data.redeId == redeId &&
         data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
@@ -136,6 +192,7 @@ service cloud.firestore {
         data.poloIds is list && data.poloIds.size() <= 50 &&
         (data.poloIds.size() == 0 || (data.poloIds[0] is string && data.poloIds[0].size() <= 128)) &&
         data.ativo is bool &&
+        (!('conviteId' in data) || isValidId(data.conviteId)) &&
         data.criadoEm is string && data.criadoEm.size() <= 40 &&
         data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
     }
@@ -296,26 +353,84 @@ service cloud.firestore {
 
     // 4. Collection Match Blocks
 
-    // Connection test probe
+    // Connection test probe (Strictly limited to get on single document /test/connection)
     match /test/connection {
       allow get: if true;
+      allow list, create, update, delete: if false;
     }
 
-    // User to Rede mapping (PII Isolated to Owner Only)
+    // User to Rede mapping (PII Isolated to Owner Only and validated against active membership)
     match /userRedes/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
       allow list: if isSignedIn() && existing().uid == request.auth.uid;
-      allow create: if isVerified() && isValidId(userId) && isValidUserRedeMap(incoming(), userId);
-      allow update: if isVerified() && isValidId(userId) && isValidUserRedeMap(incoming(), userId) &&
+      allow create: if isVerified() && isValidId(userId) &&
+        isValidUserRedeMap(incoming(), userId) &&
+        hasValidMemberLinkForUserRede(incoming().redeId, incoming().perfil);
+      allow update: if isVerified() && isValidId(userId) &&
+        isValidUserRedeMap(incoming(), userId) &&
         request.auth.uid == userId &&
         incoming().uid == existing().uid &&
+        hasValidMemberLinkForUserRede(incoming().redeId, incoming().perfil) &&
         incoming().diff(existing()).affectedKeys().hasOnly(['redeId', 'email', 'perfil', 'atualizadoEm']);
       allow delete: if false;
     }
 
+    // User Invitations (Top-level collection for secure admin issuance and invitee email-matched acceptance)
+    match /convites/{conviteId} {
+      allow get: if isSignedIn() && isValidId(conviteId) && (
+        (isVerified() && existing().email == request.auth.token.email) ||
+        isRedeAdmin(existing().redeId)
+      );
+      allow list: if isSignedIn() && (
+        (isVerified() && existing().email == request.auth.token.email) ||
+        isRedeAdmin(existing().redeId)
+      );
+      allow create: if isVerified() && isValidId(conviteId) &&
+        isValidConvite(incoming()) &&
+        incoming().criadoPor == request.auth.uid &&
+        incoming().status == 'pendente' &&
+        incoming().aceitoPorUid == '' &&
+        incoming().aceitoEm == '' &&
+        incoming().aceitoTokenHash == '' &&
+        incoming().expiraEmMillis > request.time.toMillis() &&
+        isRedeAdmin(incoming().redeId);
+      allow update: if isVerified() && isValidId(conviteId) &&
+        isValidConvite(incoming()) &&
+        incoming().redeId == existing().redeId &&
+        incoming().redeNome == existing().redeNome &&
+        incoming().nome == existing().nome &&
+        incoming().email == existing().email &&
+        incoming().perfil == existing().perfil &&
+        incoming().poloIds == existing().poloIds &&
+        incoming().tokenHash == existing().tokenHash &&
+        incoming().expiraEm == existing().expiraEm &&
+        incoming().expiraEmMillis == existing().expiraEmMillis &&
+        incoming().criadoPor == existing().criadoPor &&
+        incoming().criadoEm == existing().criadoEm && (
+          // Action 1: Invitee accepts pending, unexpired invite with valid single-use tokenHash
+          (existing().status == 'pendente' &&
+            existing().expiraEmMillis > request.time.toMillis() &&
+            request.auth.token.email == existing().email &&
+            incoming().status == 'aceito' &&
+            incoming().aceitoPorUid == request.auth.uid &&
+            incoming().aceitoTokenHash == existing().tokenHash &&
+            incoming().aceitoEm.size() > 0 &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'aceitoPorUid', 'aceitoEm', 'aceitoTokenHash', 'atualizadoEm'])) ||
+          // Action 2: Rede Admin cancels or marks expired a pending invite
+          (isRedeAdmin(existing().redeId) &&
+            existing().status == 'pendente' &&
+            incoming().status in ['cancelado', 'expirado'] &&
+            incoming().aceitoPorUid == existing().aceitoPorUid &&
+            incoming().aceitoEm == existing().aceitoEm &&
+            incoming().aceitoTokenHash == existing().aceitoTokenHash &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'atualizadoEm']))
+        );
+      allow delete: if isVerified() && isValidId(conviteId) && isRedeAdmin(existing().redeId);
+    }
+
     // Redes (Tenant Root)
     match /redes/{redeId} {
-      allow get: if isSignedIn() && isValidId(redeId) && isActiveMember(redeId);
+      allow get: if isSignedIn() && isValidId(redeId) && (isActiveMember(redeId) || existing().criadoPor == request.auth.uid);
       allow list: if isSignedIn() && existing().criadoPor == request.auth.uid;
       allow create: if isVerified() && isValidId(redeId) && isValidRede(incoming()) &&
         incoming().criadoPor == request.auth.uid;
@@ -326,7 +441,7 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'config', 'atualizadoEm']);
       allow delete: if false;
 
-      // Subcollection: Usuarios (PII Isolated to Owner or Rede Admin)
+      // Subcollection: Usuarios (PII Isolated to Owner or Rede Admin; strictly bound to real UID)
       match /usuarios/{usuarioId} {
         allow get: if isSignedIn() && isValidId(redeId) && isValidId(usuarioId) && (
           (request.auth.uid == usuarioId && existing().ativo == true) ||
@@ -334,21 +449,21 @@ service cloud.firestore {
         );
         allow list: if isSignedIn() && existing().redeId == redeId && (
           existing().uid == request.auth.uid ||
-          isRedeAdmin(redeId) ||
           isRedeGestorOrAdmin(redeId)
         );
         allow create: if isVerified() && isValidId(redeId) && isValidId(usuarioId) &&
           isValidUsuarioRede(incoming(), redeId) && (
-            isRedeAdmin(redeId) ||
-            (request.auth.uid == usuarioId &&
-              get(/databases/$(database)/documents/redes/$(redeId)).data.criadoPor == request.auth.uid)
+            isFirstAdminBootstrap(redeId, usuarioId) ||
+            isInviteAcceptance(redeId, usuarioId)
           );
         allow update: if isVerified() && isValidId(redeId) && isValidId(usuarioId) &&
           isValidUsuarioRede(incoming(), redeId) &&
           isRedeAdmin(redeId) &&
+          incoming().uid == existing().uid &&
           incoming().redeId == existing().redeId &&
+          incoming().email == existing().email &&
           incoming().criadoEm == existing().criadoEm &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'email', 'perfil', 'poloIds', 'ativo', 'atualizadoEm']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'perfil', 'poloIds', 'ativo', 'atualizadoEm']);
         allow delete: if isVerified() && isValidId(redeId) && isValidId(usuarioId) && isRedeAdmin(redeId);
       }
 
@@ -436,8 +551,9 @@ service cloud.firestore {
                 'justificativa', 'campanhaId', 'rateio', 'status', 'comprovanteUrl',
                 'atualizadoEm', 'excluido'
               ])) ||
-            // Tier 2: Operador editing own launch ONLY while pending (cannot self-approve)
-            (existing().criadoPor == request.auth.uid &&
+            // Tier 2: Active Writer (Operador) editing own launch ONLY while pending (cannot self-approve)
+            (isRedeWriter(redeId) &&
+              existing().criadoPor == request.auth.uid &&
               existing().status == 'pendente' &&
               incoming().status == 'pendente' &&
               incoming().diff(existing()).affectedKeys().hasOnly([
@@ -519,12 +635,12 @@ service cloud.firestore {
         allow delete: if isVerified() && isValidId(redeId) && isValidId(planoId) && isRedeAdmin(redeId);
       }
 
-      // Subcollection: Auditoria (Immutable append-only audit trail)
+      // Subcollection: Auditoria (Immutable append-only audit trail for active writers)
       match /auditoria/{auditoriaId} {
         allow get: if isSignedIn() && isValidId(redeId) && isValidId(auditoriaId) && isRedeGestorOrAdmin(redeId);
         allow list: if isSignedIn() && existing().redeId == redeId && isRedeGestorOrAdmin(redeId);
         allow create: if isVerified() && isValidId(redeId) && isValidId(auditoriaId) &&
-          isValidAuditoria(incoming(), redeId) && isActiveMember(redeId);
+          isValidAuditoria(incoming(), redeId) && isRedeWriter(redeId);
         allow update, delete: if false;
       }
     }

@@ -9,6 +9,14 @@ import {
   getLancamentoValorNoPolo,
   detectWasteAlerts,
   DEFAULT_REDE_CONFIG,
+  getCurrentDateSaoPaulo,
+  getCurrentMonthSaoPaulo,
+  getPreviousMonth,
+  getNextMonth,
+  getSelectableMonths,
+  generateInviteToken,
+  hashInviteTokenSha256,
+  isInviteExpired,
 } from './financeRules';
 import { Categoria, Lancamento, Orcamento, Polo } from '../types';
 
@@ -221,3 +229,42 @@ test('detectWasteAlerts triggers Alert 1 (Over Ceiling), Alert 2 (2+ Emergency i
   assert.ok(types.includes(2), 'Should detect Alert 2 (Item comprado em emergência 2+ vezes em 90 dias)');
   assert.ok(types.includes(5), 'Should detect Alert 5 (Despesas diversas acima de 5%)');
 });
+
+test('dynamic calendar helpers use real Sao Paulo date and support year rollovers without hardcoded 2026-12', () => {
+  const fixedDate = new Date('2027-01-15T15:00:00.000Z');
+  assert.equal(getCurrentDateSaoPaulo(fixedDate), '2027-01-15');
+  assert.equal(getCurrentMonthSaoPaulo(fixedDate), '2027-01');
+
+  // Year rollover backward and forward
+  assert.equal(getPreviousMonth('2027-01'), '2026-12');
+  assert.equal(getNextMonth('2026-12'), '2027-01');
+
+  // Dynamic selectable window includes past/future months and preserves manual selection outside default range
+  const selectable = getSelectableMonths('2027-01', '2024-03', 3, 2);
+  assert.ok(selectable.includes('2027-01'), 'Includes current Sao Paulo month');
+  assert.ok(selectable.includes('2026-10'), 'Includes 3 months back');
+  assert.ok(selectable.includes('2027-03'), 'Includes 2 months ahead');
+  assert.ok(selectable.includes('2024-03'), 'Preserves custom manually selected month');
+});
+
+test('invite token and SHA-256 hash helpers generate 64-char hex digest and check expiration', async () => {
+  const token1 = generateInviteToken();
+  const token2 = generateInviteToken();
+  assert.notEqual(token1, token2);
+  assert.ok(token1.length >= 24);
+
+  const hash1 = await hashInviteTokenSha256(token1);
+  const hash1Repeat = await hashInviteTokenSha256(`  ${token1}  `);
+  const hash2 = await hashInviteTokenSha256(token2);
+
+  assert.equal(hash1.length, 64);
+  assert.match(hash1, /^[0-9a-f]{64}$/);
+  assert.equal(hash1, hash1Repeat, 'Trims whitespace consistently before hashing');
+  assert.notEqual(hash1, hash2);
+
+  const now = 1_750_000_000_000;
+  assert.equal(isInviteExpired(now - 1, now), true);
+  assert.equal(isInviteExpired(now, now), true);
+  assert.equal(isInviteExpired(now + 60_000, now), false);
+});
+

@@ -13,6 +13,47 @@
       },
       "required": ["uid", "redeId", "email", "perfil", "atualizadoEm"]
     },
+    "ConviteUsuario": {
+      "title": "ConviteUsuario",
+      "description": "Single-use, time-limited user invitation with SHA-256 token hash and pre-assigned RBAC role and polos.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "redeNome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 254 },
+        "perfil": { "type": "string", "enum": ["admin", "gestor", "operador", "leitor"], "maxLength": 20 },
+        "poloIds": { "type": "array" },
+        "status": { "type": "string", "enum": ["pendente", "aceito", "cancelado", "expirado"], "maxLength": 20 },
+        "tokenHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "aceitoTokenHash": { "type": "string", "maxLength": 64 },
+        "expiraEm": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "expiraEmMillis": { "type": "number" },
+        "criadoPor": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "criadoEm": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "atualizadoEm": { "type": "string", "format": "date-time", "maxLength": 40 },
+        "aceitoPorUid": { "type": "string", "maxLength": 128 },
+        "aceitoEm": { "type": "string", "maxLength": 40 }
+      },
+      "required": [
+        "redeId",
+        "redeNome",
+        "nome",
+        "email",
+        "perfil",
+        "poloIds",
+        "status",
+        "tokenHash",
+        "aceitoTokenHash",
+        "expiraEm",
+        "expiraEmMillis",
+        "criadoPor",
+        "criadoEm",
+        "atualizadoEm",
+        "aceitoPorUid",
+        "aceitoEm"
+      ]
+    },
     "Rede": {
       "title": "Rede",
       "description": "Tenant organization holding polos, users, categories, budgets, and expenses.",
@@ -28,7 +69,7 @@
     },
     "UsuarioRede": {
       "title": "UsuarioRede",
-      "description": "User member profile and RBAC permissions inside a Rede.",
+      "description": "User member profile and RBAC permissions inside a Rede, strictly bound to an authenticated Firebase UID.",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -38,6 +79,7 @@
         "perfil": { "type": "string", "enum": ["admin", "gestor", "operador", "leitor"], "maxLength": 20 },
         "poloIds": { "type": "array" },
         "ativo": { "type": "boolean" },
+        "conviteId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "criadoEm": { "type": "string", "format": "date-time" },
         "atualizadoEm": { "type": "string", "format": "date-time" }
       },
@@ -242,7 +284,11 @@
   "firestore": {
     "/userRedes/{userId}": {
       "schema": { "$ref": "#/entities/UserRedeMap" },
-      "description": "Maps user UID to their Rede ID."
+      "description": "Maps user UID to their Rede ID, validated against active membership."
+    },
+    "/convites/{conviteId}": {
+      "schema": { "$ref": "#/entities/ConviteUsuario" },
+      "description": "Single-use user invitations with SHA-256 token hash, expiration, and pre-assigned role/polos."
     },
     "/redes/{redeId}": {
       "schema": { "$ref": "#/entities/Rede" },
@@ -250,7 +296,7 @@
     },
     "/redes/{redeId}/usuarios/{usuarioId}": {
       "schema": { "$ref": "#/entities/UsuarioRede" },
-      "description": "Network users and RBAC profiles."
+      "description": "Network users and RBAC profiles bound to real Firebase Auth UIDs."
     },
     "/redes/{redeId}/polos/{poloId}": {
       "schema": { "$ref": "#/entities/Polo" },

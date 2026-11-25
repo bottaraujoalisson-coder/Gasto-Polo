@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import {
   Building2,
   Check,
+  Copy,
   Database,
   FolderKanban,
   History,
+  KeyRound,
   Package,
   Plus,
   Settings,
@@ -14,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { PerfilUsuario, TipoCategoria } from '../types';
-import { formatBRL, formatNumberBR } from '../utils/financeRules';
+import { formatDateBR, formatNumberBR, isInviteExpired } from '../utils/financeRules';
 
 type ConfigTab =
   | 'rede'
@@ -27,9 +29,12 @@ type ConfigTab =
 
 export const ConfiguracoesPage: React.FC = () => {
   const {
+    isLocalWorkspace,
     rede,
     allPolos,
     usuarios,
+    convites,
+    lastIssuedInviteTokens,
     categorias,
     fornecedores,
     itens,
@@ -41,6 +46,8 @@ export const ConfiguracoesPage: React.FC = () => {
     updateRedeSettings,
     savePolo,
     saveUsuario,
+    createInvite,
+    cancelInvite,
     saveCategoria,
     saveFornecedor,
     saveItemCatalogo,
@@ -49,6 +56,11 @@ export const ConfiguracoesPage: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<ConfigTab>('rede');
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [latestIssuedInviteInfo, setLatestIssuedInviteInfo] = useState<{
+    id: string;
+    email: string;
+    rawToken: string;
+  } | null>(null);
 
   // Rede Form
   const [nomeRede, setNomeRede] = useState(rede?.nome || '');
@@ -65,7 +77,7 @@ export const ConfiguracoesPage: React.FC = () => {
   const [poloCidade, setPoloCidade] = useState('');
   const [poloIndicador, setPoloIndicador] = useState(350);
 
-  // Usuario Form
+  // Invite Form
   const [usrNome, setUsrNome] = useState('');
   const [usrEmail, setUsrEmail] = useState('');
   const [usrPerfil, setUsrPerfil] = useState<PerfilUsuario>('operador');
@@ -89,7 +101,7 @@ export const ConfiguracoesPage: React.FC = () => {
 
   const showNotice = (msg: string) => {
     setSavedNotice(msg);
-    setTimeout(() => setSavedNotice(null), 3500);
+    setTimeout(() => setSavedNotice(null), 4000);
   };
 
   const handleSaveRede = async (e: React.FormEvent) => {
@@ -122,16 +134,31 @@ export const ConfiguracoesPage: React.FC = () => {
   const handleCreateUsuario = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!usrNome.trim() || !usrEmail.trim()) return;
-    await saveUsuario({
+    const assignedPolos =
+      usrPerfil === 'admin'
+        ? allPolos.map((p) => p.id)
+        : usrPoloIds.length > 0
+        ? usrPoloIds
+        : allPolos[0]?.id
+        ? [allPolos[0].id]
+        : [];
+    const { convite, rawToken } = await createInvite({
       nome: usrNome.trim(),
-      email: usrEmail.trim(),
+      email: usrEmail.trim().toLowerCase(),
       perfil: usrPerfil,
-      poloIds: usrPerfil === 'admin' ? allPolos.map((p) => p.id) : usrPoloIds,
-      ativo: true,
+      poloIds: assignedPolos,
+      diasValidade: 7,
+    });
+    setLatestIssuedInviteInfo({
+      id: convite.id,
+      email: convite.email,
+      rawToken,
     });
     setUsrNome('');
     setUsrEmail('');
-    showNotice('Usuário convidado e perfil RBAC configurado.');
+    showNotice(
+      'Convite seguro emitido com hash SHA-256 e expiração de 7 dias. Compartilhe o token de uso único com o convidado.'
+    );
   };
 
   const handleCreateCategoria = async (e: React.FormEvent) => {
@@ -174,7 +201,11 @@ export const ConfiguracoesPage: React.FC = () => {
   const tabs: Array<{ id: ConfigTab; label: string; icon: React.ElementType }> = [
     { id: 'rede', label: 'Rede & Limites', icon: Settings },
     { id: 'polos', label: `Polos (${allPolos.length})`, icon: Building2 },
-    { id: 'usuarios', label: `Usuários & Perfis (${usuarios.length})`, icon: Users },
+    {
+      id: 'usuarios',
+      label: `Usuários (${usuarios.length}) & Convites (${convites.length})`,
+      icon: Users,
+    },
     { id: 'categorias', label: `Categorias (${categorias.length})`, icon: FolderKanban },
     { id: 'fornecedores', label: `Fornecedores (${fornecedores.length})`, icon: Truck },
     { id: 'itens', label: `Catálogo de Itens (${itens.length})`, icon: Package },
@@ -536,16 +567,28 @@ export const ConfiguracoesPage: React.FC = () => {
               onSubmit={handleCreateUsuario}
               className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4"
             >
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                Convidar Novo Usuário por E-mail
-              </h3>
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    Emitir Convite Seguro para Novo Usuário
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    O usuário só será criado em <code className="font-mono">usuarios/&#123;uid&#125;</code> após autenticar-se, confirmar o e-mail e validar o token único (SHA-256).
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                  <KeyRound className="w-3.5 h-3.5" />
+                  Validade: 7 dias · Uso único
+                </span>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label
                     htmlFor="usr-nome"
                     className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                   >
-                    Nome *
+                    Nome do Convidado *
                   </label>
                   <input
                     id="usr-nome"
@@ -562,7 +605,7 @@ export const ConfiguracoesPage: React.FC = () => {
                     htmlFor="usr-email"
                     className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                   >
-                    E-mail *
+                    E-mail Corporativo *
                   </label>
                   <input
                     id="usr-email"
@@ -602,7 +645,7 @@ export const ConfiguracoesPage: React.FC = () => {
               {usrPerfil !== 'admin' && (
                 <div>
                   <div className="text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
-                    Polos Autorizados para este Usuário:
+                    Polos Autorizados para este Convite:
                   </div>
                   <div className="flex flex-wrap gap-3">
                     {allPolos.map((p) => (
@@ -633,16 +676,92 @@ export const ConfiguracoesPage: React.FC = () => {
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-emerald-600 rounded-lg"
               >
                 <Plus className="w-4 h-4" />
-                Convidar Usuário
+                Emitir Convite Seguro
               </button>
+
+              {latestIssuedInviteInfo && (
+                <div className="mt-4 p-4 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/70 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-emerald-900 dark:text-emerald-200">
+                      Convite emitido para {latestIssuedInviteInfo.email}
+                    </span>
+                    <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
+                      ID: {latestIssuedInviteInfo.id}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-emerald-800 dark:text-emerald-300">
+                    Por segurança, apenas o hash SHA-256 foi salvo no banco. Copie o token ou link de uso único abaixo e envie ao usuário convidado:
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                    <div className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 px-3 py-2 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                      <div className="truncate">
+                        <div className="text-[10px] uppercase text-slate-400 font-semibold">
+                          Token de Uso Único
+                        </div>
+                        <div className="text-xs font-mono font-bold text-slate-900 dark:text-white truncate">
+                          {latestIssuedInviteInfo.rawToken}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(latestIssuedInviteInfo.rawToken);
+                          showNotice('Token do convite copiado para a área de transferência.');
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-emerald-600 text-white rounded-md shrink-0"
+                      >
+                        <Copy className="w-3 h-3" />
+                        Copiar Token
+                      </button>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 px-3 py-2 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                      <div className="truncate">
+                        <div className="text-[10px] uppercase text-slate-400 font-semibold">
+                          Link Direto de Aceite
+                        </div>
+                        <div className="text-xs font-mono text-slate-700 dark:text-slate-300 truncate">
+                          {`${window.location.origin}/?inviteId=${encodeURIComponent(
+                            latestIssuedInviteInfo.id
+                          )}&token=${encodeURIComponent(latestIssuedInviteInfo.rawToken)}`}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const link = `${window.location.origin}/?inviteId=${encodeURIComponent(
+                            latestIssuedInviteInfo.id
+                          )}&token=${encodeURIComponent(latestIssuedInviteInfo.rawToken)}`;
+                          navigator.clipboard?.writeText(link);
+                          showNotice('Link de aceite copiado para a área de transferência.');
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold bg-slate-900 dark:bg-slate-700 text-white rounded-md shrink-0"
+                      >
+                        <Copy className="w-3 h-3" />
+                        Copiar Link
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </form>
           )}
 
+          {/* Tabela 1: Usuários Efetivamente Cadastrados (com UID Real) */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
+                  Usuários Efetivamente Vinculados à Rede ({usuarios.length})
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Membros com identidade autenticada (<code className="font-mono">uid</code>) e vínculo ativo ou inativo.
+                </p>
+              </div>
+            </div>
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 text-slate-500">
-                  <th className="py-3 px-4 font-medium">Usuário</th>
+                  <th className="py-3 px-4 font-medium">Usuário & UID</th>
                   <th className="py-3 px-3 font-medium">Perfil</th>
                   <th className="py-3 px-3 font-medium">Polos Vinculados</th>
                   <th className="py-3 px-3 font-medium">Status</th>
@@ -655,6 +774,9 @@ export const ConfiguracoesPage: React.FC = () => {
                     <td className="py-3 px-4">
                       <div className="font-semibold text-slate-900 dark:text-white">{u.nome}</div>
                       <div className="text-[11px] text-slate-500">{u.email}</div>
+                      <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                        UID: {u.uid}
+                      </div>
                     </td>
                     <td className="py-3 px-3 uppercase font-semibold">{u.perfil}</td>
                     <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
@@ -676,13 +798,15 @@ export const ConfiguracoesPage: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right space-x-3 whitespace-nowrap">
-                      <button
-                        type="button"
-                        onClick={() => setActivePersonaId(u.id)}
-                        className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 underline"
-                      >
-                        Simular Visão
-                      </button>
+                      {isLocalWorkspace && (
+                        <button
+                          type="button"
+                          onClick={() => setActivePersonaId(u.id)}
+                          className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 underline"
+                        >
+                          Simular Visão (Demo)
+                        </button>
+                      )}
                       {canManageNetwork && (
                         <button
                           type="button"
@@ -708,6 +832,116 @@ export const ConfiguracoesPage: React.FC = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* Tabela 2: Convites Emitidos (Pendentes, Aceitos, Expirados, Cancelados) */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">
+                  Convites de Acesso Emitidos ({convites.length})
+                </h4>
+                <p className="text-[11px] text-slate-500">
+                  Convites pendentes não concedem acesso até o aceite autenticado com validação do hash SHA-256.
+                </p>
+              </div>
+            </div>
+            {convites.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500">
+                Nenhum convite emitido nesta rede até o momento.
+              </div>
+            ) : (
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 text-slate-500">
+                    <th className="py-3 px-4 font-medium">Convidado</th>
+                    <th className="py-3 px-3 font-medium">Perfil & Polos</th>
+                    <th className="py-3 px-3 font-medium">Validade</th>
+                    <th className="py-3 px-3 font-medium">Status</th>
+                    <th className="py-3 px-4 font-medium text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {convites.map((c) => {
+                    const expired = c.status === 'pendente' && isInviteExpired(c.expiraEmMillis);
+                    const effectiveStatus = expired ? 'expirado' : c.status;
+                    const sessionRawToken = lastIssuedInviteTokens[c.id];
+                    return (
+                      <tr key={c.id}>
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900 dark:text-white">
+                            {c.nome}
+                          </div>
+                          <div className="text-[11px] text-slate-500">{c.email}</div>
+                          <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                            ID: {c.id}
+                          </div>
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="uppercase font-semibold text-slate-800 dark:text-slate-200">
+                            {c.perfil}
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            {c.perfil === 'admin'
+                              ? 'Todos os Polos'
+                              : c.poloIds
+                                  .map((pid) => allPolos.find((p) => p.id === pid)?.nome || pid)
+                                  .join(', ')}
+                          </div>
+                        </td>
+                        <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
+                          <div>Expira: {formatDateBR(c.expiraEm.slice(0, 10))}</div>
+                          {c.aceitoEm && (
+                            <div className="text-[10px] text-emerald-600">
+                              Aceito em {formatDateBR(c.aceitoEm.slice(0, 10))}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 px-3">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold uppercase ${
+                              effectiveStatus === 'aceito'
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                : effectiveStatus === 'pendente'
+                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                : 'bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300'
+                            }`}
+                          >
+                            {effectiveStatus}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right space-x-3 whitespace-nowrap">
+                          {sessionRawToken && effectiveStatus === 'pendente' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard?.writeText(sessionRawToken);
+                                showNotice('Token copiado para a área de transferência.');
+                              }}
+                              className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 underline"
+                            >
+                              Copiar Token
+                            </button>
+                          )}
+                          {canManageNetwork && effectiveStatus === 'pendente' && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                await cancelInvite(c.id);
+                                showNotice('Convite cancelado com sucesso.');
+                              }}
+                              className="text-xs font-medium text-red-600 dark:text-red-400 underline"
+                            >
+                              Cancelar Convite
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       )}

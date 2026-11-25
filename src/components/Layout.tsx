@@ -16,22 +16,27 @@ import {
   ShieldCheck,
   Building2,
   Calendar,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import {
-  formatBRL,
   formatMonthBR,
-  getLastNMonths,
+  getCurrentMonthSaoPaulo,
   getLancamentoValorNoPolo,
+  getNextMonth,
+  getPreviousMonth,
+  getSelectableMonths,
   roundCents,
 } from '../utils/financeRules';
 
 export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const {
+    firebaseUser,
+    isLocalWorkspace,
     rede,
     currentUserProfile,
     usuarios,
-    activePersonaId,
     setActivePersonaId,
     visiblePolos,
     selectedMonth,
@@ -56,7 +61,11 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
   const [confirmRemoveDemo, setConfirmRemoveDemo] = useState(false);
   const [busyDemo, setBusyDemo] = useState(false);
 
-  const availableMonths = getLastNMonths('2026-12', 14).reverse();
+  // Dynamic calendar options anchored on the real current month in America/Sao_Paulo, preserving manual selection
+  const availableMonths = React.useMemo(
+    () => getSelectableMonths(getCurrentMonthSaoPaulo(), selectedMonth),
+    [selectedMonth]
+  );
 
   // Compute budget threshold crossing alerts (80% and 100%) for the current month & polo
   const budgetCrossings = React.useMemo(() => {
@@ -145,7 +154,35 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     }
   };
 
-  if (currentUserProfile && !currentUserProfile.ativo) {
+  // Strict Identity Gate: If no authorized profile matches the authenticated UID, block access
+  if (!currentUserProfile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
+        <div className="max-w-md w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 text-center space-y-4">
+          <AlertTriangle className="w-10 h-10 text-amber-600 mx-auto" />
+          <h1 className="text-lg font-bold text-slate-900 dark:text-slate-100">
+            Sem Perfil Autorizado nesta Rede
+          </h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            A conta autenticada ({firebaseUser?.email || 'usuário atual'}) não possui um vínculo
+            ativo em <strong>{rede?.nome || 'Rede selecionada'}</strong>. Solicite um convite ao
+            Administrador da Rede ou entre com uma conta autorizada.
+          </p>
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={logout}
+              className="w-full py-2.5 px-4 text-xs font-semibold text-white bg-slate-900 dark:bg-emerald-600 rounded-lg"
+            >
+              Sair / Trocar Conta
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUserProfile.ativo) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-6">
         <div className="max-w-md w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6 text-center space-y-4">
@@ -155,17 +192,16 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           </h1>
           <p className="text-sm text-slate-600 dark:text-slate-400">
             Sua conta ({currentUserProfile.email}) está marcada como inativa na rede{' '}
-            <strong>{rede?.nome}</strong>. Contate o Administrador da Rede ou alterne o perfil de
-            teste abaixo.
+            <strong>{rede?.nome}</strong>. Contate o Administrador da Rede.
           </p>
           <div className="pt-2 flex flex-col gap-2">
-            {usuarios.length > 1 && (
+            {isLocalWorkspace && usuarios.length > 1 && (
               <button
                 type="button"
                 onClick={() => setActivePersonaId(null)}
                 className="w-full py-2 px-4 text-sm font-medium text-white bg-slate-900 dark:bg-emerald-600 rounded-lg"
               >
-                Voltar ao Perfil Admin da Rede
+                Voltar ao Perfil Admin (Modo Demo)
               </button>
             )}
             <button
@@ -207,24 +243,24 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           <div className="text-xs text-slate-500 dark:text-slate-400">
             Perfil ativo:{' '}
             <strong className="text-slate-900 dark:text-emerald-400 uppercase">
-              {currentUserProfile?.perfil}
+              {currentUserProfile.perfil}
             </strong>{' '}
-            · {currentUserProfile?.nome.split(' ')[0]}
+            · {currentUserProfile.nome.split(' ')[0]}
           </div>
 
-          {/* RBAC Profile Simulator so Admin/Evaluator can verify strict Polo Isolation */}
-          {usuarios.length > 1 && (
+          {/* RBAC Profile Simulator ONLY available in isolated Demo Workspace */}
+          {isLocalWorkspace && usuarios.length > 1 && (
             <div className="pt-1">
               <label
                 htmlFor="rbac-persona-select"
                 className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1"
               >
-                Testar Isolamento RBAC (Perfil):
+                Simular Perfil (Apenas Modo Demo):
               </label>
               <select
                 id="rbac-persona-select"
                 aria-label="Testar Isolamento RBAC"
-                value={currentUserProfile?.id || ''}
+                value={currentUserProfile.id || ''}
                 onChange={(e) => setActivePersonaId(e.target.value)}
                 className="w-full text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 text-slate-800 dark:text-slate-200"
               >
@@ -330,7 +366,7 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
 
       {/* Main Content Area */}
       <div className="flex-1 min-w-0 md:pl-64 flex flex-col min-h-screen pb-16 md:pb-0">
-        {/* Top Bar Contract: Breadcrumb on Left, Global Polo/Month Filters & Primary Action on Right */}
+        {/* Top Bar Contract: Breadcrumb on Left, Global Polo/Month Filters on Right */}
         <header className="no-print sticky top-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-b border-slate-200 dark:border-slate-800 px-4 md:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-500 dark:text-slate-400">{rede?.nome}</span>
@@ -363,9 +399,17 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
               </select>
             </div>
 
-            {/* Global Competence Month Selector */}
-            <div className="flex items-center gap-1.5">
-              <Calendar className="w-4 h-4 text-slate-400 shrink-0" />
+            {/* Global Competence Month Selector with Previous/Next Month navigation across year rollovers */}
+            <div className="flex items-center gap-1">
+              <Calendar className="w-4 h-4 text-slate-400 shrink-0 mr-0.5" />
+              <button
+                type="button"
+                aria-label="Mês anterior"
+                onClick={() => setSelectedMonth(getPreviousMonth(selectedMonth))}
+                className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
               <select
                 aria-label="Filtrar por Mês de Competência"
                 value={selectedMonth}
@@ -378,6 +422,14 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                aria-label="Próximo mês"
+                onClick={() => setSelectedMonth(getNextMonth(selectedMonth))}
+                className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
             </div>
 
             {/* Mobile Theme Toggle */}
@@ -439,8 +491,8 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
           </div>
         )}
 
-        {/* Active RBAC Isolation Indicator when testing non-admin roles */}
-        {currentUserProfile && currentUserProfile.perfil !== 'admin' && (
+        {/* Active RBAC Isolation Indicator */}
+        {currentUserProfile.perfil !== 'admin' && (
           <div className="no-print px-4 md:px-8 py-2 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 text-xs flex flex-wrap items-center justify-between gap-2 text-slate-700 dark:text-slate-300">
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
@@ -452,13 +504,15 @@ export const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) =>
                 de outros polos estão bloqueados.
               </span>
             </div>
-            <button
-              type="button"
-              onClick={() => setActivePersonaId(null)}
-              className="text-xs font-semibold text-slate-900 dark:text-emerald-400 underline whitespace-nowrap"
-            >
-              Restaurar visão Admin
-            </button>
+            {isLocalWorkspace && (
+              <button
+                type="button"
+                onClick={() => setActivePersonaId(null)}
+                className="text-xs font-semibold text-slate-900 dark:text-emerald-400 underline whitespace-nowrap"
+              >
+                Restaurar visão Admin (Demo)
+              </button>
+            )}
           </div>
         )}
 

@@ -1,6 +1,22 @@
 {
   "indexes": [
     {
+      "collectionGroup": "convites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "email", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "convites",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "redeId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "lancamentos",
       "queryScope": "COLLECTION",
       "fields": [
