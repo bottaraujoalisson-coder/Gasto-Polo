@@ -457,6 +457,12 @@ test('Firestore Security Rules — Real Emulator Suite (Phase 5 Audit Remediatio
           descricao: 'Resma A4 Reciclada',
         })
       );
+      // Operador CANNOT soft-delete (excluido: true) their own launch (Section 7 requirement)
+      await assertFails(
+        updateDoc(doc(opDb, 'redes/rede-a/lancamentos/lanc-op-new'), {
+          excluido: true,
+        })
+      );
       // Operador cannot escalate their own role to admin in usuarios or userRedes
       await assertFails(
         updateDoc(doc(opDb, 'redes/rede-a/usuarios/uid-op-a1'), {
@@ -473,7 +479,7 @@ test('Firestore Security Rules — Real Emulator Suite (Phase 5 Audit Remediatio
         })
       );
 
-      // D. Gestor of polo-a1 can approve launch in polo-a1, CANNOT read or approve launch in polo-a2
+      // D. Gestor of polo-a1 can approve or soft-delete launch in polo-a1, CANNOT read or modify launch in polo-a2
       await assertSucceeds(
         updateDoc(doc(gestorDb, 'redes/rede-a/lancamentos/lanc-op-new'), {
           status: 'aprovado',
@@ -483,6 +489,24 @@ test('Firestore Security Rules — Real Emulator Suite (Phase 5 Audit Remediatio
       await assertFails(
         updateDoc(doc(gestorDb, 'redes/rede-a/lancamentos/lanc-a2'), {
           status: 'aprovado',
+        })
+      );
+      // Gestor CANNOT create or edit a Polo document (reserved for Administrador)
+      await assertFails(
+        setDoc(doc(gestorDb, 'redes/rede-a/polos/polo-novo'), {
+          redeId: 'rede-a',
+          nome: 'Polo Tentativa Gestor',
+          cidade: 'Campinas',
+          ativo: true,
+          indicadorTamanho: 100,
+          criadoEm: '2026-11-25T10:00:00.000Z',
+          atualizadoEm: '2026-11-25T10:00:00.000Z',
+        })
+      );
+      // Gestor CAN soft-delete a launch in their authorized polo-a1
+      await assertSucceeds(
+        updateDoc(doc(gestorDb, 'redes/rede-a/lancamentos/lanc-a1'), {
+          excluido: true,
         })
       );
       // Once lanc-op-new is approved, Operador can no longer edit it

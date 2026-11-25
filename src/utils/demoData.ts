@@ -33,9 +33,9 @@ export function buildDemoDataset(
 ): DemoDataset {
   const now = new Date().toISOString();
 
-  // Ensure all 11 default categories exist
+  // Ensure all default categories exist
   const categorias: Categoria[] =
-    existingCategorias.length >= 11
+    existingCategorias.length >= CATEGORIAS_PADRAO.length
       ? existingCategorias
       : CATEGORIAS_PADRAO.map((c, idx) => ({
           id: `cat-padrao-${idx + 1}`,
@@ -55,25 +55,25 @@ export function buildDemoDataset(
     return found ? found.id : categorias[0].id;
   };
 
-  const catEscritorio = findCatId('escritório');
-  const catLimpeza = findCatId('limpeza');
-  const catCopa = findCatId('copa');
-  const catAtendimento = findCatId('atendimento');
+  const catEscritorio = findCatId('materiais');
+  const catLimpeza = findCatId('terceirizados');
+  const catCopa = findCatId('alimentação');
+  const catAtendimento = findCatId('aluguel');
   const catManutencao = findCatId('manutenção');
-  const catEquipamentos = findCatId('equipamentos');
-  const catDiversas = findCatId('diversas');
-  const catImpressao = findCatId('impressão');
-  const catBrindes = findCatId('brindes');
-  const catDigital = findCatId('divulgação');
-  const catTrafego = findCatId('tráfego');
+  const catEquipamentos = findCatId('combustível');
+  const catDiversas = findCatId('outros');
+  const catImpressao = findCatId('transporte');
+  const catBrindes = findCatId('marketing');
+  const catDigital = findCatId('marketing');
+  const catTrafego = findCatId('marketing');
 
-  // 3 Polos realistas
+  // 3 Polos Unimar
   const polos: Polo[] = [
     {
       id: 'demo-polo-centro',
       redeId,
-      nome: 'Polo Centro — Matriz',
-      cidade: 'São Paulo / SP',
+      nome: 'Polo Marília — Matriz',
+      cidade: 'Marília / SP',
       ativo: true,
       indicadorTamanho: 620,
       demo: true,
@@ -83,7 +83,7 @@ export function buildDemoDataset(
     {
       id: 'demo-polo-campinas',
       redeId,
-      nome: 'Polo Campinas Norte',
+      nome: 'Polo Campinas',
       cidade: 'Campinas / SP',
       ativo: true,
       indicadorTamanho: 410,
@@ -94,8 +94,8 @@ export function buildDemoDataset(
     {
       id: 'demo-polo-santos',
       redeId,
-      nome: 'Polo Santos Litoral',
-      cidade: 'Santos / SP',
+      nome: 'Polo São Paulo',
+      cidade: 'São Paulo / SP',
       ativo: true,
       indicadorTamanho: 280,
       demo: true,
@@ -109,8 +109,8 @@ export function buildDemoDataset(
       id: 'demo-user-gestor-centro',
       uid: 'demo-user-gestor-centro',
       redeId,
-      nome: 'Mariana Costa (Gestora Centro/Campinas)',
-      email: 'mariana.gestora@gastopolo.com.br',
+      nome: 'Mariana Costa',
+      email: 'mariana.costa@unimar.br',
       perfil: 'gestor',
       poloIds: ['demo-polo-centro', 'demo-polo-campinas'],
       ativo: true,
@@ -121,8 +121,8 @@ export function buildDemoDataset(
       id: 'demo-user-operador-centro',
       uid: 'demo-user-operador-centro',
       redeId,
-      nome: 'Lucas Ribeiro (Operador Polo Centro)',
-      email: 'lucas.centro@gastopolo.com.br',
+      nome: 'Lucas Ribeiro',
+      email: 'lucas.ribeiro@unimar.br',
       perfil: 'operador',
       poloIds: ['demo-polo-centro'],
       ativo: true,
@@ -133,22 +133,10 @@ export function buildDemoDataset(
       id: 'demo-user-operador-santos',
       uid: 'demo-user-operador-santos',
       redeId,
-      nome: 'Fernanda Alves (Operadora Polo Santos)',
-      email: 'fernanda.santos@gastopolo.com.br',
+      nome: 'Fernanda Alves',
+      email: 'fernanda.alves@unimar.br',
       perfil: 'operador',
       poloIds: ['demo-polo-santos'],
-      ativo: true,
-      criadoEm: now,
-      atualizadoEm: now,
-    },
-    {
-      id: 'demo-user-leitor',
-      uid: 'demo-user-leitor',
-      redeId,
-      nome: 'Carlos Eduardo (Conselho / Leitor)',
-      email: 'carlos.conselho@gastopolo.com.br',
-      perfil: 'leitor',
-      poloIds: ['demo-polo-centro', 'demo-polo-campinas', 'demo-polo-santos'],
       ativo: true,
       criadoEm: now,
       atualizadoEm: now,

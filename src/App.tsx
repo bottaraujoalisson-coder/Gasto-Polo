@@ -6,11 +6,9 @@ import { Layout } from './components/Layout';
 import { AuthAndOnboardingPage } from './pages/AuthAndOnboardingPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { LancamentosPage } from './pages/LancamentosPage';
-import { OrcamentoPage } from './pages/OrcamentoPage';
-import { DesperdiciosPage } from './pages/DesperdiciosPage';
-import { MarketingPage } from './pages/MarketingPage';
+import { PolosPage } from './pages/PolosPage';
 import { RelatorioPage } from './pages/RelatorioPage';
-import { ConfiguracoesPage } from './pages/ConfiguracoesPage';
+import { UsuariosPage } from './pages/UsuariosPage';
 
 const AppRoutes: React.FC = () => {
   const { authLoading, dataLoading, firebaseUser, isEmailVerified, isLocalWorkspace, rede } =
@@ -44,11 +42,11 @@ const AppRoutes: React.FC = () => {
       <Routes>
         <Route path="/" element={<DashboardPage />} />
         <Route path="/lancamentos" element={<LancamentosPage />} />
-        <Route path="/orcamento" element={<OrcamentoPage />} />
-        <Route path="/desperdicios" element={<DesperdiciosPage />} />
-        <Route path="/marketing" element={<MarketingPage />} />
-        <Route path="/relatorio" element={<RelatorioPage />} />
-        <Route path="/configuracoes" element={<ConfiguracoesPage />} />
+        <Route path="/polos" element={<PolosPage />} />
+        <Route path="/relatorios" element={<RelatorioPage />} />
+        <Route path="/relatorio" element={<Navigate to="/relatorios" replace />} />
+        <Route path="/usuarios" element={<UsuariosPage />} />
+        <Route path="/configuracoes" element={<Navigate to="/usuarios" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

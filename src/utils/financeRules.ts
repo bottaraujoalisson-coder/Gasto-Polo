@@ -14,17 +14,15 @@ import {
 } from '../types';
 
 export const CATEGORIAS_PADRAO: Array<{ nome: string; tipo: TipoCategoria }> = [
-  { nome: 'Materiais de escritório', tipo: 'interno' },
-  { nome: 'Materiais de limpeza', tipo: 'interno' },
-  { nome: 'Produtos de copa e cozinha', tipo: 'interno' },
-  { nome: 'Materiais de atendimento', tipo: 'interno' },
-  { nome: 'Materiais de manutenção', tipo: 'interno' },
-  { nome: 'Equipamentos e acessórios', tipo: 'interno' },
-  { nome: 'Despesas diversas', tipo: 'interno' },
-  { nome: 'Impressão de materiais', tipo: 'marketing' },
-  { nome: 'Brindes promocionais', tipo: 'marketing' },
-  { nome: 'Divulgação digital', tipo: 'marketing' },
-  { nome: 'Tráfego pago', tipo: 'marketing' },
+  { nome: 'Alimentação', tipo: 'interno' },
+  { nome: 'Combustível', tipo: 'interno' },
+  { nome: 'Manutenção', tipo: 'interno' },
+  { nome: 'Materiais e suprimentos', tipo: 'interno' },
+  { nome: 'Serviços terceirizados', tipo: 'interno' },
+  { nome: 'Aluguel e estrutura', tipo: 'interno' },
+  { nome: 'Marketing', tipo: 'marketing' },
+  { nome: 'Transporte', tipo: 'interno' },
+  { nome: 'Outros', tipo: 'interno' },
 ];
 
 export const DEFAULT_REDE_CONFIG: RedeConfig = {

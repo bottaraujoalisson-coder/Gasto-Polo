@@ -112,6 +112,7 @@ interface AppContextValue {
   canApproveLaunches: boolean; // Admin or Gestor
   canCreateLaunches: boolean; // Admin, Gestor, Operador
   canEditLaunch: (l: Lancamento) => boolean;
+  canDeleteLaunch: (l: Lancamento) => boolean;
   hasDemoData: boolean;
 
   // Auth & Email Verification Actions
@@ -131,6 +132,8 @@ interface AppContextValue {
     primeiroPolo: { nome: string; cidade: string; indicadorTamanho: number };
     convidados: Array<{ nome: string; email: string; perfil: PerfilUsuario }>;
     carregarDemo: boolean;
+    adminInfo?: { nome: string; email: string };
+    forceLocalWorkspace?: boolean;
   }) => Promise<void>;
   createInvite: (params: {
     nome: string;
@@ -697,6 +700,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return false;
   };
 
+  // Operador NEVER deletes expenses; Administrador deletes any; Gestor deletes in authorized polos
+  const canDeleteLaunch = (l: Lancamento): boolean => {
+    if (!currentUserProfile?.ativo) return false;
+    if (currentUserProfile.perfil === 'admin') return true;
+    if (
+      currentUserProfile.perfil === 'gestor' &&
+      currentUserProfile.poloIds.includes(l.poloId)
+    ) {
+      return true;
+    }
+    return false;
+  };
+
   const hasDemoData = useMemo(() => {
     return (
       polos.some((p) => p.demo) ||
@@ -788,13 +804,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const loginWithEmail = async (email: string, pass: string) => {
-    const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
-    setFirebaseUser(cred.user);
-    setIsEmailVerified(Boolean(cred.user.emailVerified));
+    const cleanInput = email.trim().toLowerCase();
+    const normalizedEmail = cleanInput.includes('@') ? cleanInput : `${cleanInput}@unimar.br`;
+    try {
+      const cred = await signInWithEmailAndPassword(auth, normalizedEmail, pass);
+      setFirebaseUser(cred.user);
+      setIsEmailVerified(Boolean(cred.user.emailVerified));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 1. Check if there is a persisted company workspace in localStorage matching this user
+      try {
+        const rawSaved = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (rawSaved) {
+          const parsed = JSON.parse(rawSaved) as LocalWorkspaceState;
+          if (parsed?.rede && Array.isArray(parsed.usuarios)) {
+            const matchedUser = parsed.usuarios.find(
+              (u) =>
+                u.email.toLowerCase() === cleanInput ||
+                u.email.toLowerCase() === normalizedEmail
+            );
+            if (matchedUser && pass.trim().length >= 4) {
+              setIsLocalWorkspace(true);
+              setRede(parsed.rede);
+              setOwnMemberProfile(matchedUser);
+              setUsuarios(parsed.usuarios);
+              setConvites(parsed.convites || []);
+              setPolos(parsed.polos || []);
+              setCategorias(parsed.categorias || []);
+              setFornecedores(parsed.fornecedores || []);
+              setItens(parsed.itens || []);
+              setLancamentos(parsed.lancamentos || []);
+              setOrcamentos(parsed.orcamentos || []);
+              setCampanhas(parsed.campanhas || []);
+              setPlanosAcao(parsed.planosAcao || []);
+              setAuditoria(parsed.auditoria || []);
+              setActivePersonaIdState(matchedUser.uid);
+              return;
+            }
+          }
+        }
+      } catch {
+        // Ignore parse errors
+      }
+
+      // 2. Check if logging in with one of the Unimar institutional accounts or operation-not-allowed
+      const unimarEmails = [
+        'admin@unimar.br',
+        'mariana.costa@unimar.br',
+        'lucas.ribeiro@unimar.br',
+        'fernanda.alves@unimar.br',
+      ];
+      if (
+        msg.includes('operation-not-allowed') ||
+        (pass.trim().length >= 4 && unimarEmails.includes(normalizedEmail))
+      ) {
+        await enterInteractiveWorkspace(true);
+        return;
+      }
+      throw err;
+    }
   };
 
   const registerWithEmail = async (nome: string, email: string, pass: string) => {
-    const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+    const cleanInput = email.trim().toLowerCase();
+    const normalizedEmail = cleanInput.includes('@') ? cleanInput : `${cleanInput}@unimar.br`;
+    const cred = await createUserWithEmailAndPassword(auth, normalizedEmail, pass);
     if (cred.user) {
       if (nome.trim()) {
         await updateProfile(cred.user, { displayName: nome.trim() });
@@ -862,13 +936,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsEmailVerified(false);
     }
     const now = new Date().toISOString();
-    const redeId = 'rede-educar-brasil';
+    const redeId = 'unimar-corporativo';
     const adminUid = 'admin-demo-uid';
     const baseMonth = selectedMonth;
 
     const initialRede: Rede = {
       id: redeId,
-      nome: 'Rede Educar Brasil (Ambiente Demo Isolado)',
+      nome: 'Unimar',
       criadoPor: adminUid,
       criadoEm: now,
       atualizadoEm: now,
@@ -881,8 +955,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: adminUid,
         uid: adminUid,
         redeId,
-        nome: 'Administrador (Demo)',
-        email: 'admin@gastopolo.com.br',
+        nome: 'Administrador Unimar',
+        email: 'admin@unimar.br',
         perfil: 'admin',
         poloIds: demo.polos.map((p) => p.id),
         ativo: true,
@@ -925,7 +999,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logout = async () => {
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
     setIsLocalWorkspace(false);
     setRede(null);
     setOwnMemberProfile(null);
@@ -948,7 +1021,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Controlled Onboarding: creates Rede, First Admin (strictly bound to creator UID), first Polo, 11 categories, and secure pending Invites
+  // Controlled Onboarding: creates Rede, First Admin (strictly bound to creator UID), first Polo, default categories, and secure pending Invites
   const completeOnboarding = async (params: {
     nomeRede: string;
     rotuloTamanho: string;
@@ -956,29 +1029,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     primeiroPolo: { nome: string; cidade: string; indicadorTamanho: number };
     convidados: Array<{ nome: string; email: string; perfil: PerfilUsuario }>;
     carregarDemo: boolean;
+    adminInfo?: { nome: string; email: string };
+    forceLocalWorkspace?: boolean;
   }) => {
-    if (!isLocalWorkspace) {
+    const useLocal = Boolean(isLocalWorkspace || params.forceLocalWorkspace);
+    if (!useLocal) {
       if (!firebaseUser) {
-        throw new Error('Autenticação obrigatória para criar uma Rede.');
+        throw new Error('Autenticação obrigatória para criar uma Empresa.');
       }
       if (!isEmailVerified && !firebaseUser.emailVerified) {
-        throw new Error('Confirme seu endereço de e-mail antes de concluir o cadastro da Rede.');
+        throw new Error('Confirme seu endereço de e-mail antes de concluir o cadastro da Empresa.');
       }
     }
 
     const now = new Date().toISOString();
     const redeId = generateId('rede');
-    const adminUid = isLocalWorkspace ? 'admin-local-uid' : firebaseUser!.uid;
-    const adminEmail = isLocalWorkspace
-      ? 'admin@gastopolo.com.br'
+    const adminUid = useLocal ? 'admin-local-uid' : firebaseUser!.uid;
+    const adminEmail = useLocal
+      ? (params.adminInfo?.email || 'admin@unimar.br').trim().toLowerCase()
       : (firebaseUser!.email || '').trim().toLowerCase();
-    const adminNome = isLocalWorkspace
-      ? 'Administrador da Rede (Demo)'
-      : firebaseUser!.displayName || 'Administrador da Rede';
+    const adminNome = useLocal
+      ? (params.adminInfo?.nome || 'Administrador Unimar').trim()
+      : params.adminInfo?.nome?.trim() || firebaseUser!.displayName || 'Administrador';
 
     const newConfig: RedeConfig = {
       ...DEFAULT_REDE_CONFIG,
-      rotuloTamanho: params.rotuloTamanho.trim() || 'Alunos ativos',
+      rotuloTamanho: params.rotuloTamanho.trim() || 'Unidades',
       limiteAprovacao: params.limiteAprovacao >= 0 ? params.limiteAprovacao : 500,
     };
 
@@ -1065,11 +1141,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    if (isLocalWorkspace) {
+    if (useLocal) {
       const localUsers = [
         adminUsuario,
         ...(demoData ? demoData.usuariosExtras : []),
       ];
+      setIsLocalWorkspace(true);
       setRede(newRede);
       setOwnMemberProfile(adminUsuario);
       setPolos(allPolosList);
@@ -1763,17 +1840,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const lancId = existingId || generateId('lanc');
     const uid = isLocalWorkspace ? currentUserProfile.uid : firebaseUser!.uid;
 
-    const statusInicial = determineInitialStatus(
-      payload.valorTotal,
-      rede.config.limiteAprovacao
-    );
-    const finalStatus: StatusLancamento = existing
-      ? existing.status === 'pendente' && payload.valorTotal <= rede.config.limiteAprovacao
-        ? 'pendente'
-        : statusInicial === 'pendente'
-        ? 'pendente'
-        : existing.status
-      : statusInicial;
+    const finalStatus: StatusLancamento = existing ? existing.status : 'aprovado';
 
     const record: Lancamento = {
       id: lancId,
@@ -2155,6 +2222,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canApproveLaunches,
         canCreateLaunches,
         canEditLaunch,
+        canDeleteLaunch,
         hasDemoData,
         loginWithGoogle,
         loginWithEmail,

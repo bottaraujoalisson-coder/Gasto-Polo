@@ -1,71 +1,52 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  AlertTriangle,
-  Check,
-  Copy,
+  CheckCircle2,
   Download,
   Edit3,
+  ExternalLink,
   Plus,
   Search,
-  Split,
   Trash2,
   X,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { Lancamento } from '../types';
 import {
-  CriterioRateio,
-  Lancamento,
-  ParteRateio,
-  StatusLancamento,
-  TipoCategoria,
-} from '../types';
-import {
-  calculateRateioPartes,
-  calculateValorTotal,
   formatBRL,
   formatDateBR,
-  formatNumberBR,
+  formatMonthBR,
+  getCurrentDateSaoPaulo,
   getLancamentoValorNoPolo,
-  isDespesaDiversa,
-  validateRateioSum,
+  roundCents,
 } from '../utils/financeRules';
 import { exportLancamentosCSV } from '../utils/exportUtils';
 
 export const LancamentosPage: React.FC = () => {
   const {
-    rede,
     currentUserProfile,
     visiblePolos,
     allPolos,
     categorias,
     fornecedores,
-    itens,
-    campanhas,
     lancamentos,
     selectedMonth,
+    setSelectedMonth,
     selectedPoloId,
+    setSelectedPoloId,
     canCreateLaunches,
-    canApproveLaunches,
     canEditLaunch,
+    canDeleteLaunch,
+    canManageNetwork,
+    saveCategoria,
     saveLancamento,
-    duplicateLancamento,
-    updateLancamentoStatus,
     softDeleteLancamento,
   } = useApp();
 
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategoriaId, setFilterCategoriaId] = useState('ALL');
-  const [filterTipo, setFilterTipo] = useState<'ALL' | TipoCategoria>('ALL');
-  const [filterEmergencial, setFilterEmergencial] = useState<'ALL' | 'SIM' | 'NAO'>('ALL');
-  const [filterStatus, setFilterStatus] = useState<'ALL' | StatusLancamento>(() => {
-    const st = searchParams.get('status') as StatusLancamento | null;
-    return st || 'ALL';
-  });
-  const [filterFornecedorId, setFilterFornecedorId] = useState('ALL');
   const [filterTodoPeriodo, setFilterTodoPeriodo] = useState(false);
   const [sortBy, setSortBy] = useState<'data_desc' | 'data_asc' | 'valor_desc' | 'valor_asc'>(
     'data_desc'
@@ -73,72 +54,65 @@ export const LancamentosPage: React.FC = () => {
   const [page, setPage] = useState(1);
   const pageSize = 15;
 
-  // Modal Form state
+  const [notice, setNotice] = useState<string | null>(null);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
   const [formData, setFormData] = useState({
-    data: `${selectedMonth}-15`,
-    poloId: visiblePolos[0]?.id || '',
-    tipo: 'interno' as TipoCategoria,
-    categoriaId: categorias[0]?.id || '',
-    itemId: '',
     descricao: '',
-    fornecedorId: '',
-    quantidade: 1,
-    unidade: 'un',
-    valorUnitario: 0,
+    valor: '',
+    data: getCurrentDateSaoPaulo(),
+    poloId: '',
+    categoriaId: '',
     formaPagamento: 'PIX',
-    emergencial: false,
-    justificativa: '',
-    campanhaId: '',
-    rateioAtivo: false,
-    rateioCriterio: 'proporcional' as CriterioRateio,
-    rateioPoloIds: [] as string[],
-    rateioPartes: [] as ParteRateio[],
+    observacoes: '',
     comprovanteUrl: '',
   });
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // Open modal automatically if ?novo=1
+  const [addingNewCat, setAddingNewCat] = useState(false);
+  const [newCatName, setNewCatName] = useState('');
+
+  const [confirmDeleteItem, setConfirmDeleteItem] = useState<Lancamento | null>(null);
+
+  const showNotice = (msg: string) => {
+    setNotice(msg);
+    setTimeout(() => setNotice(null), 4000);
+  };
+
+  const activeCategorias = useMemo(() => {
+    return categorias.filter((c) => c.ativa);
+  }, [categorias]);
+
   useEffect(() => {
     if (searchParams.get('novo') === '1' && canCreateLaunches) {
       openNewModal();
       searchParams.delete('novo');
       setSearchParams(searchParams, { replace: true });
     }
-    const statusParam = searchParams.get('status') as StatusLancamento | null;
-    if (statusParam) {
-      setFilterStatus(statusParam);
-    }
   }, [searchParams]);
 
   const openNewModal = () => {
+    const activePolos = visiblePolos.filter((p) => p.ativo);
     const defaultPolo =
-      selectedPoloId !== 'ALL' ? selectedPoloId : visiblePolos[0]?.id || '';
-    const defaultCat = categorias.find((c) => c.ativa) || categorias[0];
+      selectedPoloId !== 'ALL'
+        ? selectedPoloId
+        : activePolos[0]?.id || visiblePolos[0]?.id || '';
+    const defaultCat = activeCategorias[0]?.id || categorias[0]?.id || '';
+    const today = getCurrentDateSaoPaulo();
+    const defaultDate = today.startsWith(selectedMonth) ? today : `${selectedMonth}-15`;
+
     setEditingId(undefined);
     setFormError(null);
     setFormData({
-      data: `${selectedMonth}-${String(Math.min(28, new Date().getDate())).padStart(2, '0')}`,
-      poloId: defaultPolo,
-      tipo: defaultCat?.tipo || 'interno',
-      categoriaId: defaultCat?.id || '',
-      itemId: '',
       descricao: '',
-      fornecedorId: fornecedores[0]?.id || '',
-      quantidade: 1,
-      unidade: 'un',
-      valorUnitario: 0,
+      valor: '',
+      data: defaultDate,
+      poloId: defaultPolo,
+      categoriaId: defaultCat,
       formaPagamento: 'PIX',
-      emergencial: false,
-      justificativa: '',
-      campanhaId: '',
-      rateioAtivo: false,
-      rateioCriterio: 'proporcional',
-      rateioPoloIds: visiblePolos.map((p) => p.id),
-      rateioPartes: [],
+      observacoes: '',
       comprovanteUrl: '',
     });
     setIsModalOpen(true);
@@ -148,127 +122,74 @@ export const LancamentosPage: React.FC = () => {
     setEditingId(l.id);
     setFormError(null);
     setFormData({
+      descricao: l.descricao,
+      valor: String(l.valorTotal),
       data: l.data,
       poloId: l.poloId,
-      tipo: l.tipo,
       categoriaId: l.categoriaId,
-      itemId: l.itemId,
-      descricao: l.descricao,
-      fornecedorId: l.fornecedorId,
-      quantidade: l.quantidade,
-      unidade: l.unidade,
-      valorUnitario: l.valorUnitario,
-      formaPagamento: l.formaPagamento,
-      emergencial: l.emergencial,
-      justificativa: l.justificativa,
-      campanhaId: l.campanhaId,
-      rateioAtivo: Boolean(l.rateio?.ativo),
-      rateioCriterio: l.rateio?.criterio || 'proporcional',
-      rateioPoloIds:
-        l.rateio?.ativo && l.rateio.partes.length > 0
-          ? l.rateio.partes.map((pt) => pt.poloId)
-          : visiblePolos.map((p) => p.id),
-      rateioPartes: l.rateio?.partes || [],
+      formaPagamento: l.formaPagamento || 'PIX',
+      observacoes: l.justificativa || '',
       comprovanteUrl: l.comprovanteUrl || '',
     });
     setIsModalOpen(true);
   };
 
-  const valorTotalCalculado = useMemo(
-    () => calculateValorTotal(formData.quantidade, formData.valorUnitario),
-    [formData.quantidade, formData.valorUnitario]
-  );
-
-  // Recalculate rateio parts automatically when total, criterio, or selected polos change (unless manual)
-  useEffect(() => {
-    if (!formData.rateioAtivo) return;
-    if (formData.rateioCriterio === 'manual') return;
-    const targetPolos = allPolos.filter((p) => formData.rateioPoloIds.includes(p.id));
-    const partes = calculateRateioPartes(
-      valorTotalCalculado,
-      formData.rateioCriterio,
-      targetPolos
-    );
-    setFormData((prev) => ({ ...prev, rateioPartes: partes }));
-  }, [
-    formData.rateioAtivo,
-    formData.rateioCriterio,
-    formData.rateioPoloIds,
-    valorTotalCalculado,
-    allPolos,
-  ]);
-
-  const selectedCategoriaObj = useMemo(
-    () => categorias.find((c) => c.id === formData.categoriaId),
-    [categorias, formData.categoriaId]
-  );
-
-  const requiresJustificativa =
-    formData.emergencial ||
-    (selectedCategoriaObj ? isDespesaDiversa(selectedCategoriaObj.nome) : false);
-
-  const willBePending =
-    valorTotalCalculado > (rede?.config.limiteAprovacao ?? 500);
-
-  const handleSelectCatalogItem = (itemId: string) => {
-    if (!itemId) {
-      setFormData((prev) => ({ ...prev, itemId: '' }));
-      return;
-    }
-    const item = itens.find((i) => i.id === itemId);
-    if (!item) return;
-    const cat = categorias.find((c) => c.id === item.categoriaId);
-    setFormData((prev) => ({
-      ...prev,
-      itemId: item.id,
-      descricao: item.nome,
-      unidade: item.unidade,
-      categoriaId: item.categoriaId || prev.categoriaId,
-      tipo: cat?.tipo || prev.tipo,
-    }));
+  const handleQuickAddCategory = async () => {
+    if (!newCatName.trim()) return;
+    await saveCategoria({
+      nome: newCatName.trim(),
+      tipo: newCatName.trim().toLowerCase().includes('marketing') ? 'marketing' : 'interno',
+      ativa: true,
+    });
+    setNewCatName('');
+    setAddingNewCat(false);
+    showNotice('Categoria adicionada.');
   };
 
   const handleSaveSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
+    const cleanDesc = formData.descricao.trim();
+    if (!cleanDesc) {
+      setFormError('Informe a descrição da despesa.');
+      return;
+    }
+
+    const parsedValor = Number(String(formData.valor).replace(',', '.'));
+    if (!Number.isFinite(parsedValor) || parsedValor <= 0) {
+      setFormError('Informe um valor válido maior que R$ 0,00.');
+      return;
+    }
+
+    if (!formData.data || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(formData.data)) {
+      setFormError('Informe uma data válida.');
+      return;
+    }
+
+    const [y, m, d] = formData.data.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, d);
+    if (
+      dateObj.getFullYear() !== y ||
+      dateObj.getMonth() !== m - 1 ||
+      dateObj.getDate() !== d
+    ) {
+      setFormError('Data inválida.');
+      return;
+    }
+
     if (!formData.poloId) {
-      setFormError('Selecione o polo responsável.');
+      setFormError('Selecione o polo.');
       return;
     }
+
     if (!formData.categoriaId) {
-      setFormError('Selecione uma categoria.');
+      setFormError('Selecione a categoria.');
       return;
     }
-    if (!formData.descricao.trim()) {
-      setFormError('Informe a descrição ou selecione um item do catálogo.');
-      return;
-    }
-    if (valorTotalCalculado <= 0) {
-      setFormError('O valor total do lançamento deve ser maior que zero.');
-      return;
-    }
-    if (requiresJustificativa && !formData.justificativa.trim()) {
-      setFormError(
-        formData.emergencial
-          ? 'Compras emergenciais exigem justificativa obrigatória.'
-          : 'Lançamentos em "Despesas diversas" exigem justificativa detalhada.'
-      );
-      return;
-    }
-    if (formData.rateioAtivo) {
-      if (formData.rateioPartes.length < 2) {
-        setFormError('Selecione pelo menos 2 polos para realizar o rateio.');
-        return;
-      }
-      if (!validateRateioSum(valorTotalCalculado, formData.rateioPartes)) {
-        const somaAtual = formData.rateioPartes.reduce((a, b) => a + b.valor, 0);
-        setFormError(
-          `A soma das partes do rateio (${formatBRL(somaAtual)}) deve fechar exatamente o valor total (${formatBRL(valorTotalCalculado)}).`
-        );
-        return;
-      }
-    }
+
+    const catObj = categorias.find((c) => c.id === formData.categoriaId);
+    const valorFinal = roundCents(parsedValor);
 
     setSubmitting(true);
     try {
@@ -276,36 +197,31 @@ export const LancamentosPage: React.FC = () => {
         {
           data: formData.data,
           poloId: formData.poloId,
-          tipo: selectedCategoriaObj?.tipo || formData.tipo,
+          tipo: catObj?.tipo || 'interno',
           categoriaId: formData.categoriaId,
-          itemId: formData.itemId,
-          descricao: formData.descricao.trim(),
-          fornecedorId: formData.fornecedorId,
-          quantidade: Number(formData.quantidade) || 1,
-          unidade: formData.unidade.trim() || 'un',
-          valorUnitario: Number(formData.valorUnitario) || 0,
-          valorTotal: valorTotalCalculado,
-          formaPagamento: formData.formaPagamento,
+          itemId: '',
+          descricao: cleanDesc,
+          fornecedorId: '',
+          quantidade: 1,
+          unidade: 'un',
+          valorUnitario: valorFinal,
+          valorTotal: valorFinal,
+          formaPagamento: formData.formaPagamento || 'PIX',
           responsavelUid: currentUserProfile?.uid || 'admin',
-          emergencial: formData.emergencial,
-          justificativa: formData.justificativa.trim(),
-          campanhaId: formData.campanhaId,
-          rateio: formData.rateioAtivo
-            ? {
-                ativo: true,
-                criterio: formData.rateioCriterio,
-                partes: formData.rateioPartes,
-              }
-            : {
-                ativo: false,
-                criterio: 'igual',
-                partes: [],
-              },
-          comprovanteUrl: formData.comprovanteUrl,
+          emergencial: false,
+          justificativa: formData.observacoes.trim(),
+          campanhaId: '',
+          rateio: {
+            ativo: false,
+            criterio: 'igual',
+            partes: [],
+          },
+          comprovanteUrl: formData.comprovanteUrl.trim(),
         },
         editingId
       );
       setIsModalOpen(false);
+      showNotice(editingId ? 'Despesa atualizada.' : 'Despesa cadastrada.');
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -313,24 +229,18 @@ export const LancamentosPage: React.FC = () => {
     }
   };
 
-  // Filtered and Sorted Launches
   const filteredList = useMemo(() => {
     return lancamentos
       .filter((l) => {
-        if (l.excluido) return false;
+        if (l.excluido || l.status === 'rejeitado') return false;
         if (!filterTodoPeriodo && l.competencia !== selectedMonth) return false;
         if (getLancamentoValorNoPolo(l, selectedPoloId) <= 0) return false;
         if (filterCategoriaId !== 'ALL' && l.categoriaId !== filterCategoriaId) return false;
-        if (filterTipo !== 'ALL' && l.tipo !== filterTipo) return false;
-        if (filterEmergencial === 'SIM' && !l.emergencial) return false;
-        if (filterEmergencial === 'NAO' && l.emergencial) return false;
-        if (filterStatus !== 'ALL' && l.status !== filterStatus) return false;
-        if (filterFornecedorId !== 'ALL' && l.fornecedorId !== filterFornecedorId) return false;
         if (searchTerm.trim()) {
           const q = searchTerm.toLowerCase();
           const matchDesc = l.descricao.toLowerCase().includes(q);
-          const matchJust = l.justificativa.toLowerCase().includes(q);
-          if (!matchDesc && !matchJust) return false;
+          const matchObs = (l.justificativa || '').toLowerCase().includes(q);
+          if (!matchDesc && !matchObs) return false;
         }
         return true;
       })
@@ -348,33 +258,14 @@ export const LancamentosPage: React.FC = () => {
     selectedMonth,
     selectedPoloId,
     filterCategoriaId,
-    filterTipo,
-    filterEmergencial,
-    filterStatus,
-    filterFornecedorId,
     searchTerm,
     sortBy,
   ]);
 
-  const summaryTotals = useMemo(() => {
-    let aprovado = 0;
-    let pendente = 0;
-    let emergencial = 0;
-    for (const l of filteredList) {
-      const v = getLancamentoValorNoPolo(l, selectedPoloId);
-      if (l.status === 'aprovado') {
-        aprovado += v;
-        if (l.emergencial) emergencial += v;
-      } else if (l.status === 'pendente') {
-        pendente += v;
-      }
-    }
-    return {
-      aprovado,
-      pendente,
-      emergencial,
-      count: filteredList.length,
-    };
+  const totalFiltrado = useMemo(() => {
+    return roundCents(
+      filteredList.reduce((acc, l) => acc + getLancamentoValorNoPolo(l, selectedPoloId), 0)
+    );
   }, [filteredList, selectedPoloId]);
 
   const totalPages = Math.max(1, Math.ceil(filteredList.length / pageSize));
@@ -382,20 +273,14 @@ export const LancamentosPage: React.FC = () => {
 
   const poloMap = useMemo(() => new Map(allPolos.map((p) => [p.id, p.nome])), [allPolos]);
   const catMap = useMemo(() => new Map(categorias.map((c) => [c.id, c.nome])), [categorias]);
-  const fornMap = useMemo(() => new Map(fornecedores.map((f) => [f.id, f.nome])), [fornecedores]);
 
   return (
     <div className="space-y-6">
       {/* Header & Primary Actions */}
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Lançamentos de Despesas e Rateios
-          </h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">
-            Limite de aprovação automática: <strong>{formatBRL(rede?.config.limiteAprovacao || 500)}</strong>. Acima deste valor, o lançamento aguarda aprovação do Gestor.
-          </p>
-        </div>
+        <h2 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+          Lançamentos de Despesas
+        </h2>
 
         <div className="flex items-center gap-2.5">
           <button
@@ -408,69 +293,83 @@ export const LancamentosPage: React.FC = () => {
                 fornecedores,
               })
             }
-            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+            className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap cursor-pointer"
           >
             <Download className="w-4 h-4" />
-            Exportar CSV ({filteredList.length})
+            Exportar ({filteredList.length})
           </button>
 
           {canCreateLaunches && (
             <button
               type="button"
               onClick={openNewModal}
-              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-emerald-600 rounded-lg hover:opacity-90 transition-opacity whitespace-nowrap"
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#002855] hover:bg-[#003875] rounded-lg transition-colors whitespace-nowrap cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              Novo Lançamento
+              Nova Despesa
             </button>
           )}
         </div>
       </div>
 
-      {/* Summary Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            Total Aprovado (Filtro Atual)
+      {notice && (
+        <div
+          role="status"
+          className="p-3 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg text-xs text-blue-900 dark:text-blue-200 flex items-center gap-2"
+        >
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{notice}</span>
+        </div>
+      )}
+
+      {/* Summary Banner */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Total Filtrado</div>
+            <div
+              data-testid="lancamentos-total-aprovado"
+              className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white mt-0.5"
+            >
+              {formatBRL(totalFiltrado)}
+            </div>
           </div>
-          <div
-            data-testid="lancamentos-total-aprovado"
-            className="text-xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400 mt-1"
-          >
-            {formatBRL(summaryTotals.aprovado)}
+          <div className="text-right text-xs text-slate-500">
+            <div>{filteredList.length} registro(s)</div>
+            <div>{filterTodoPeriodo ? 'Histórico completo' : formatMonthBR(selectedMonth)}</div>
           </div>
         </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            Pendentes de Aprovação (À Parte)
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between">
+          <div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Escopo</div>
+            <div className="text-base font-bold text-slate-900 dark:text-white mt-1">
+              {selectedPoloId === 'ALL'
+                ? `Todos os Polos (${visiblePolos.length})`
+                : poloMap.get(selectedPoloId) || selectedPoloId}
+            </div>
           </div>
-          <div
-            data-testid="lancamentos-total-pendente"
-            className="text-xl font-bold font-mono tabular-nums text-amber-600 dark:text-amber-400 mt-1"
-          >
-            {formatBRL(summaryTotals.pendente)}
-          </div>
-        </div>
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4">
-          <div className="text-xs text-slate-500 dark:text-slate-400">
-            Compras Emergenciais Aprovadas
-          </div>
-          <div className="text-xl font-bold font-mono tabular-nums text-red-600 dark:text-red-400 mt-1">
-            {formatBRL(summaryTotals.emergencial)}
-          </div>
+          {selectedPoloId !== 'ALL' && visiblePolos.length > 1 && (
+            <button
+              type="button"
+              onClick={() => setSelectedPoloId('ALL')}
+              className="text-xs font-semibold text-[#004B8D] dark:text-blue-400 hover:underline cursor-pointer"
+            >
+              Todos os Polos
+            </button>
+          )}
         </div>
       </div>
 
       {/* Filters Bar */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-          {/* Search */}
           <div className="lg:col-span-2 relative">
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
-              aria-label="Buscar lançamentos"
-              placeholder="Buscar descrição ou justificativa..."
+              aria-label="Pesquisar por descrição"
+              placeholder="Pesquisar descrição..."
               value={searchTerm}
               onChange={(e) => {
                 setSearchTerm(e.target.value);
@@ -480,7 +379,37 @@ export const LancamentosPage: React.FC = () => {
             />
           </div>
 
-          {/* Categoria */}
+          <input
+            type="month"
+            aria-label="Filtrar por Período"
+            value={selectedMonth}
+            disabled={filterTodoPeriodo}
+            onChange={(e) => {
+              if (e.target.value) {
+                setSelectedMonth(e.target.value);
+                setPage(1);
+              }
+            }}
+            className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg disabled:opacity-50"
+          />
+
+          <select
+            aria-label="Filtrar por Polo"
+            value={selectedPoloId}
+            onChange={(e) => {
+              setSelectedPoloId(e.target.value);
+              setPage(1);
+            }}
+            className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg"
+          >
+            {visiblePolos.length > 1 && <option value="ALL">Todos os Polos</option>}
+            {visiblePolos.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.nome}
+              </option>
+            ))}
+          </select>
+
           <select
             aria-label="Filtrar por Categoria"
             value={filterCategoriaId}
@@ -498,38 +427,6 @@ export const LancamentosPage: React.FC = () => {
             ))}
           </select>
 
-          {/* Status */}
-          <select
-            aria-label="Filtrar por Status"
-            value={filterStatus}
-            onChange={(e) => {
-              setFilterStatus(e.target.value as 'ALL' | StatusLancamento);
-              setPage(1);
-            }}
-            className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg"
-          >
-            <option value="ALL">Todos os Status</option>
-            <option value="aprovado">Aprovados</option>
-            <option value="pendente">Pendentes</option>
-            <option value="rejeitado">Rejeitados</option>
-          </select>
-
-          {/* Emergencial */}
-          <select
-            aria-label="Filtrar por Emergencial"
-            value={filterEmergencial}
-            onChange={(e) => {
-              setFilterEmergencial(e.target.value as 'ALL' | 'SIM' | 'NAO');
-              setPage(1);
-            }}
-            className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg"
-          >
-            <option value="ALL">Emergencial: Todos</option>
-            <option value="SIM">Apenas Emergenciais</option>
-            <option value="NAO">Apenas Planejados</option>
-          </select>
-
-          {/* Ordenação */}
           <select
             aria-label="Ordenar lançamentos"
             value={sortBy}
@@ -540,81 +437,48 @@ export const LancamentosPage: React.FC = () => {
             }
             className="px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg"
           >
-            <option value="data_desc">Data (Mais recentes)</option>
-            <option value="data_asc">Data (Mais antigos)</option>
-            <option value="valor_desc">Maior Valor</option>
-            <option value="valor_asc">Menor Valor</option>
+            <option value="data_desc">Data (Recentes)</option>
+            <option value="data_asc">Data (Antigos)</option>
+            <option value="valor_desc">Valor (Maior)</option>
+            <option value="valor_asc">Valor (Menor)</option>
           </select>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1 text-xs">
-          <div className="flex items-center gap-4">
-            <select
-              aria-label="Filtrar por Tipo"
-              value={filterTipo}
+          <label className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-300 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={filterTodoPeriodo}
               onChange={(e) => {
-                setFilterTipo(e.target.value as 'ALL' | TipoCategoria);
+                setFilterTodoPeriodo(e.target.checked);
                 setPage(1);
               }}
-              className="px-2.5 py-1 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg"
-            >
-              <option value="ALL">Tipo: Interno + Marketing</option>
-              <option value="interno">Apenas Interno</option>
-              <option value="marketing">Apenas Marketing</option>
-            </select>
-
-            <select
-              aria-label="Filtrar por Fornecedor"
-              value={filterFornecedorId}
-              onChange={(e) => {
-                setFilterFornecedorId(e.target.value);
-                setPage(1);
-              }}
-              className="px-2.5 py-1 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg"
-            >
-              <option value="ALL">Todos os Fornecedores</option>
-              {fornecedores.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.nome}
-                </option>
-              ))}
-            </select>
-
-            <label className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={filterTodoPeriodo}
-                onChange={(e) => {
-                  setFilterTodoPeriodo(e.target.checked);
-                  setPage(1);
-                }}
-                className="rounded border-slate-300"
-              />
-              Exibir todos os meses (histórico completo)
-            </label>
-          </div>
+              className="rounded border-slate-300"
+            />
+            Exibir todos os períodos
+          </label>
 
           <span className="text-slate-500 dark:text-slate-400">
-            Exibindo {paginatedList.length} de {filteredList.length} lançamento(s)
+            {paginatedList.length} de {filteredList.length} registro(s)
           </span>
         </div>
       </div>
 
-      {/* Launches Data Table */}
+      {/* Expenses Table */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
         {paginatedList.length === 0 ? (
           <div className="p-12 text-center space-y-3">
             <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-              Nenhum lançamento encontrado para os filtros selecionados.
+              Nenhuma despesa encontrada.
             </p>
             {canCreateLaunches && (
               <button
                 type="button"
                 onClick={openNewModal}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-emerald-600 rounded-lg"
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#002855] hover:bg-[#003875] rounded-lg cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
-                Registrar Primeiro Lançamento
+                Nova Despesa
               </button>
             )}
           </div>
@@ -624,12 +488,11 @@ export const LancamentosPage: React.FC = () => {
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400">
                   <th className="py-3 px-4 font-medium">Data</th>
+                  <th className="py-3 px-3 font-medium">Descrição</th>
                   <th className="py-3 px-3 font-medium">Polo</th>
-                  <th className="py-3 px-3 font-medium">Descrição / Fornecedor</th>
                   <th className="py-3 px-3 font-medium">Categoria</th>
-                  <th className="py-3 px-3 font-medium text-right">Qtd × Unit.</th>
-                  <th className="py-3 px-3 font-medium text-right">Valor no Polo</th>
-                  <th className="py-3 px-3 font-medium">Status</th>
+                  <th className="py-3 px-3 font-medium">Pagamento</th>
+                  <th className="py-3 px-3 font-medium text-right">Valor (R$)</th>
                   <th className="py-3 px-4 font-medium text-right">Ações</th>
                 </tr>
               </thead>
@@ -637,6 +500,7 @@ export const LancamentosPage: React.FC = () => {
                 {paginatedList.map((l) => {
                   const valNoPolo = getLancamentoValorNoPolo(l, selectedPoloId);
                   const editable = canEditLaunch(l);
+                  const deletable = canDeleteLaunch(l);
                   return (
                     <tr
                       key={l.id}
@@ -645,134 +509,64 @@ export const LancamentosPage: React.FC = () => {
                       <td className="py-3 px-4 font-mono tabular-nums whitespace-nowrap">
                         {formatDateBR(l.data)}
                       </td>
-                      <td className="py-3 px-3 font-medium text-slate-800 dark:text-slate-200">
-                        <div>{poloMap.get(l.poloId) || l.poloId}</div>
-                        {l.rateio?.ativo && (
-                          <div className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
-                            <Split className="w-3 h-3" />
-                            <span>
-                              Rateado ({l.rateio.criterio} · Total {formatBRL(l.valorTotal)})
-                            </span>
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 max-w-xs">
-                        <div className="font-medium text-slate-900 dark:text-white truncate">
+                      <td className="py-3 px-3 max-w-sm">
+                        <div className="font-semibold text-slate-900 dark:text-white truncate">
                           {l.descricao}
                         </div>
-                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                          {fornMap.get(l.fornecedorId) || 'Fornecedor avulso'} · {l.formaPagamento}
-                          {l.emergencial && (
-                            <span className="text-red-600 dark:text-red-400 font-semibold ml-1.5">
-                              · EMERGENCIAL
-                            </span>
-                          )}
-                        </div>
                         {l.justificativa && (
-                          <div className="text-[11px] text-slate-500 italic truncate">
-                            Motivo: {l.justificativa}
+                          <div className="text-[11px] text-slate-500 truncate">
+                            {l.justificativa}
                           </div>
                         )}
+                        {l.comprovanteUrl && (
+                          <a
+                            href={l.comprovanteUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-[11px] text-[#004B8D] dark:text-blue-400 hover:underline mt-0.5"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            Comprovante
+                          </a>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 font-medium text-slate-800 dark:text-slate-200">
+                        {poloMap.get(l.poloId) || l.poloId}
                       </td>
                       <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
-                        <div>{catMap.get(l.categoriaId) || l.categoriaId}</div>
-                        <div className="text-[10px] text-slate-400 uppercase">{l.tipo}</div>
+                        {catMap.get(l.categoriaId) || l.categoriaId}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono tabular-nums text-slate-600 dark:text-slate-400 whitespace-nowrap">
-                        {formatNumberBR(l.quantidade)} {l.unidade} × {formatBRL(l.valorUnitario)}
+                      <td className="py-3 px-3 text-slate-600 dark:text-slate-400">
+                        {l.formaPagamento || '—'}
                       </td>
                       <td className="py-3 px-3 text-right font-mono tabular-nums font-bold text-slate-900 dark:text-white whitespace-nowrap">
                         {formatBRL(valNoPolo)}
                       </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <span
-                          className={`font-semibold uppercase text-[11px] ${
-                            l.status === 'aprovado'
-                              ? 'text-emerald-600 dark:text-emerald-400'
-                              : l.status === 'pendente'
-                              ? 'text-amber-600 dark:text-amber-400'
-                              : 'text-red-600 dark:text-red-400'
-                          }`}
-                        >
-                          {l.status}
-                        </span>
-                      </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
-                          {l.status === 'pendente' && canApproveLaunches && (
-                            <>
-                              <button
-                                type="button"
-                                aria-label={`Aprovar ${l.descricao}`}
-                                onClick={() => updateLancamentoStatus(l.id, 'aprovado')}
-                                className="px-2 py-1 text-[11px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded"
-                              >
-                                Aprovar
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Rejeitar ${l.descricao}`}
-                                onClick={() => updateLancamentoStatus(l.id, 'rejeitado')}
-                                className="px-2 py-1 text-[11px] font-medium text-red-600 border border-red-200 dark:border-red-800 hover:bg-red-50 rounded"
-                              >
-                                Rejeitar
-                              </button>
-                            </>
-                          )}
-
                           {editable && (
                             <button
                               type="button"
                               aria-label={`Editar ${l.descricao}`}
                               onClick={() => openEditModal(l)}
-                              className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded hover:bg-slate-100 dark:hover:bg-slate-800"
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md cursor-pointer"
                             >
                               <Edit3 className="w-3.5 h-3.5" />
+                              Editar
                             </button>
                           )}
 
-                          {canCreateLaunches && (
+                          {deletable && (
                             <button
                               type="button"
-                              aria-label={`Duplicar ${l.descricao}`}
-                              onClick={() => duplicateLancamento(l)}
-                              className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded hover:bg-slate-100 dark:hover:bg-slate-800"
+                              aria-label={`Excluir ${l.descricao}`}
+                              onClick={() => setConfirmDeleteItem(l)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/70 rounded-md cursor-pointer"
                             >
-                              <Copy className="w-3.5 h-3.5" />
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Excluir
                             </button>
                           )}
-
-                          {editable &&
-                            (confirmDeleteId === l.id ? (
-                              <span className="inline-flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    softDeleteLancamento(l.id);
-                                    setConfirmDeleteId(null);
-                                  }}
-                                  className="px-2 py-0.5 text-[10px] font-semibold text-white bg-red-600 rounded"
-                                >
-                                  Excluir
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteId(null)}
-                                  className="px-1.5 py-0.5 text-[10px] text-slate-600 bg-slate-100 rounded"
-                                >
-                                  Não
-                                </button>
-                              </span>
-                            ) : (
-                              <button
-                                type="button"
-                                aria-label={`Excluir ${l.descricao}`}
-                                onClick={() => setConfirmDeleteId(l.id)}
-                                className="p-1.5 text-slate-400 hover:text-red-600 rounded hover:bg-red-50 dark:hover:bg-red-950/50"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            ))}
                         </div>
                       </td>
                     </tr>
@@ -783,7 +577,6 @@ export const LancamentosPage: React.FC = () => {
           </div>
         )}
 
-        {/* Pagination Footer */}
         {totalPages > 1 && (
           <div className="px-4 py-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
             <span>
@@ -794,7 +587,7 @@ export const LancamentosPage: React.FC = () => {
                 type="button"
                 disabled={page <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="px-3 py-1 border border-slate-300 dark:border-slate-700 rounded disabled:opacity-40"
+                className="px-3 py-1 border border-slate-300 dark:border-slate-700 rounded disabled:opacity-40 cursor-pointer"
               >
                 Anterior
               </button>
@@ -802,7 +595,7 @@ export const LancamentosPage: React.FC = () => {
                 type="button"
                 disabled={page >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="px-3 py-1 border border-slate-300 dark:border-slate-700 rounded disabled:opacity-40"
+                className="px-3 py-1 border border-slate-300 dark:border-slate-700 rounded disabled:opacity-40 cursor-pointer"
               >
                 Próxima
               </button>
@@ -811,7 +604,46 @@ export const LancamentosPage: React.FC = () => {
         )}
       </div>
 
-      {/* Modal: Novo / Editar Lançamento */}
+      {/* Confirmation before deleting expense */}
+      {confirmDeleteItem && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+        >
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl max-w-md w-full p-6 space-y-4">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white">
+              Excluir Despesa
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              Confirmar exclusão de <strong>&ldquo;{confirmDeleteItem.descricao}&rdquo;</strong> (
+              <strong>{formatBRL(confirmDeleteItem.valorTotal)}</strong>)?
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteItem(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await softDeleteLancamento(confirmDeleteItem.id);
+                  setConfirmDeleteItem(null);
+                  showNotice('Despesa excluída.');
+                }}
+                className="px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg cursor-pointer"
+              >
+                Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Cadastrar / Editar Despesa */}
       {isModalOpen && (
         <div
           role="dialog"
@@ -819,19 +651,19 @@ export const LancamentosPage: React.FC = () => {
           aria-labelledby="modal-lancamento-titulo"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 overflow-y-auto"
         >
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl max-w-2xl w-full p-6 space-y-5 my-8 max-h-[92vh] overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl max-w-lg w-full p-6 space-y-5 my-8">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <h3
                 id="modal-lancamento-titulo"
                 className="text-base font-bold text-slate-900 dark:text-white"
               >
-                {editingId ? 'Editar Lançamento' : 'Novo Lançamento de Gasto'}
+                {editingId ? 'Editar Despesa' : 'Nova Despesa'}
               </h3>
               <button
                 type="button"
                 aria-label="Fechar formulário"
                 onClick={() => setIsModalOpen(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -844,36 +676,84 @@ export const LancamentosPage: React.FC = () => {
             )}
 
             <form onSubmit={handleSaveSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label
+                  htmlFor="lanc-descricao"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                >
+                  Descrição *
+                </label>
+                <input
+                  id="lanc-descricao"
+                  type="text"
+                  required
+                  placeholder="Descrição da despesa"
+                  value={formData.descricao}
+                  onChange={(e) =>
+                    setFormData((prev) => ({ ...prev, descricao: e.target.value }))
+                  }
+                  className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="lanc-valor"
+                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  >
+                    Valor (R$) *
+                  </label>
+                  <input
+                    id="lanc-valor"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    required
+                    placeholder="0,00"
+                    value={formData.valor}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, valor: e.target.value }))
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                  />
+                </div>
+
                 <div>
                   <label
                     htmlFor="lanc-data"
                     className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                   >
-                    Data da Despesa *
+                    Data *
                   </label>
                   <input
                     id="lanc-data"
                     type="date"
                     required
                     value={formData.data}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, data: e.target.value }))}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, data: e.target.value }))
+                    }
                     className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                   />
                 </div>
+              </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label
                     htmlFor="lanc-polo"
                     className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                   >
-                    Polo Principal *
+                    Polo *
                   </label>
                   <select
                     id="lanc-polo"
                     required
                     value={formData.poloId}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, poloId: e.target.value }))}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, poloId: e.target.value }))
+                    }
                     className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                   >
                     {visiblePolos.map((p) => (
@@ -885,202 +765,61 @@ export const LancamentosPage: React.FC = () => {
                 </div>
 
                 <div>
-                  <label
-                    htmlFor="lanc-categoria"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Categoria *
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label
+                      htmlFor="lanc-categoria"
+                      className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+                    >
+                      Categoria *
+                    </label>
+                    {canManageNetwork && (
+                      <button
+                        type="button"
+                        onClick={() => setAddingNewCat((prev) => !prev)}
+                        className="text-[11px] font-semibold text-[#004B8D] dark:text-blue-400 hover:underline cursor-pointer"
+                      >
+                        {addingNewCat ? 'Cancelar' : '+ Categoria'}
+                      </button>
+                    )}
+                  </div>
                   <select
                     id="lanc-categoria"
                     required
                     value={formData.categoriaId}
-                    onChange={(e) => {
-                      const cat = categorias.find((c) => c.id === e.target.value);
-                      setFormData((prev) => ({
-                        ...prev,
-                        categoriaId: e.target.value,
-                        tipo: cat?.tipo || prev.tipo,
-                      }));
-                    }}
+                    onChange={(e) =>
+                      setFormData((prev) => ({ ...prev, categoriaId: e.target.value }))
+                    }
                     className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                   >
-                    {categorias
-                      .filter((c) => c.ativa)
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.nome} ({c.tipo === 'marketing' ? 'Marketing' : 'Interno'})
-                        </option>
-                      ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Catálogo de Itens + Descrição */}
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                <div className="sm:col-span-5">
-                  <label
-                    htmlFor="lanc-item-catalogo"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Item Padronizado (Opcional)
-                  </label>
-                  <select
-                    id="lanc-item-catalogo"
-                    value={formData.itemId}
-                    onChange={(e) => handleSelectCatalogItem(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  >
-                    <option value="">Digitar descrição livre...</option>
-                    {itens.map((it) => (
-                      <option key={it.id} value={it.id}>
-                        {it.nome} ({it.unidade})
+                    {activeCategorias.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nome}
                       </option>
                     ))}
                   </select>
                 </div>
-
-                <div className="sm:col-span-7">
-                  <label
-                    htmlFor="lanc-descricao"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Descrição do Item ou Serviço *
-                  </label>
-                  <input
-                    id="lanc-descricao"
-                    type="text"
-                    required
-                    placeholder="Ex: Compra de cartuchos de toner / Manutenção ar-condicionado"
-                    value={formData.descricao}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, descricao: e.target.value }))
-                    }
-                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  />
-                </div>
               </div>
 
-              {/* Quantidade, Unidade, Valor Unitário e Total Calculado Automaticamente */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 dark:bg-slate-800/60 p-3.5 rounded-lg border border-slate-200 dark:border-slate-800">
-                <div>
-                  <label
-                    htmlFor="lanc-qtd"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Quantidade *
-                  </label>
+              {addingNewCat && canManageNetwork && (
+                <div className="p-3 bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 rounded-lg flex gap-2">
                   <input
-                    id="lanc-qtd"
-                    type="number"
-                    min="0.01"
-                    step="any"
-                    required
-                    value={formData.quantidade}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        quantidade: Number(e.target.value),
-                      }))
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="lanc-unidade"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Unidade
-                  </label>
-                  <input
-                    id="lanc-unidade"
                     type="text"
-                    value={formData.unidade}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, unidade: e.target.value }))
-                    }
-                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
+                    placeholder="Nome da categoria"
+                    value={newCatName}
+                    onChange={(e) => setNewCatName(e.target.value)}
+                    className="flex-1 px-2.5 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md"
                   />
-                </div>
-
-                <div>
-                  <label
-                    htmlFor="lanc-valor-unit"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                  <button
+                    type="button"
+                    onClick={handleQuickAddCategory}
+                    className="px-3 py-1.5 text-xs font-semibold text-white bg-[#002855] rounded-md cursor-pointer"
                   >
-                    Valor Unitário (R$) *
-                  </label>
-                  <input
-                    id="lanc-valor-unit"
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    required
-                    value={formData.valorUnitario}
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        valorUnitario: Number(e.target.value),
-                      }))
-                    }
-                    className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  />
-                </div>
-
-                <div>
-                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">
-                    Valor Total Calculado
-                  </div>
-                  <div
-                    data-testid="form-valor-total-calculado"
-                    className="px-3 py-2 text-sm font-bold font-mono tabular-nums text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 rounded-lg"
-                  >
-                    {formatBRL(valorTotalCalculado)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Approval Threshold Warning */}
-              {willBePending && (
-                <div className="p-3 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 rounded-lg text-xs text-amber-800 dark:text-amber-300 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>
-                    Valor acima do limite de aprovação automática (
-                    <strong>{formatBRL(rede?.config.limiteAprovacao || 500)}</strong>). Este
-                    lançamento ficará com status <strong>PENDENTE</strong> até aprovação do Gestor
-                    ou Admin.
-                  </span>
+                    Salvar
+                  </button>
                 </div>
               )}
 
-              {/* Fornecedor, Forma de Pagamento e Campanha (se Marketing) */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label
-                    htmlFor="lanc-fornecedor"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Fornecedor
-                  </label>
-                  <select
-                    id="lanc-fornecedor"
-                    value={formData.fornecedorId}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, fornecedorId: e.target.value }))
-                    }
-                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  >
-                    <option value="">Fornecedor avulso / Não cadastrado</option>
-                    {fornecedores.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.nome}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label
                     htmlFor="lanc-pagamento"
@@ -1097,225 +836,67 @@ export const LancamentosPage: React.FC = () => {
                     className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                   >
                     <option value="PIX">PIX</option>
-                    <option value="Boleto Faturado 28d">Boleto Faturado 28d</option>
+                    <option value="Boleto">Boleto Bancário</option>
                     <option value="Cartão Corporativo">Cartão Corporativo</option>
-                    <option value="Transferência TED">Transferência TED</option>
+                    <option value="Transferência / TED">Transferência / TED</option>
+                    <option value="Débito Automático">Débito Automático</option>
+                    <option value="Dinheiro">Dinheiro</option>
                   </select>
                 </div>
 
                 <div>
                   <label
-                    htmlFor="lanc-campanha"
+                    htmlFor="lanc-comprovante"
                     className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                   >
-                    Campanha de Marketing
+                    Comprovante / Anexo (URL)
                   </label>
-                  <select
-                    id="lanc-campanha"
-                    value={formData.campanhaId}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, campanhaId: e.target.value }))
-                    }
-                    className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
-                  >
-                    <option value="">Sem campanha vinculada</option>
-                    {campanhas.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.nome}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Emergencial Toggle & Justificativa */}
-              <div className="space-y-3 pt-1">
-                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
                   <input
-                    type="checkbox"
-                    checked={formData.emergencial}
+                    id="lanc-comprovante"
+                    type="url"
+                    placeholder="https://..."
+                    value={formData.comprovanteUrl}
                     onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, emergencial: e.target.checked }))
-                    }
-                    className="rounded border-slate-300"
-                  />
-                  Marcar como Compra Emergencial (fora do planejamento mensal)
-                </label>
-
-                <div>
-                  <label
-                    htmlFor="lanc-justificativa"
-                    className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
-                  >
-                    Justificativa / Motivo {requiresJustificativa ? '* (Obrigatório)' : '(Opcional)'}
-                  </label>
-                  <textarea
-                    id="lanc-justificativa"
-                    rows={2}
-                    required={requiresJustificativa}
-                    placeholder={
-                      requiresJustificativa
-                        ? 'Explique obrigatoriamente o motivo da compra emergencial ou da despesa diversa...'
-                        : 'Observações adicionais sobre o lançamento...'
-                    }
-                    value={formData.justificativa}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, justificativa: e.target.value }))
+                      setFormData((prev) => ({ ...prev, comprovanteUrl: e.target.value }))
                     }
                     className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
                   />
                 </div>
               </div>
 
-              {/* Rateio entre Polos */}
-              <div className="p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 rounded-xl space-y-3">
-                <div className="flex items-center justify-between">
-                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.rateioAtivo}
-                      onChange={(e) =>
-                        setFormData((prev) => ({
-                          ...prev,
-                          rateioAtivo: e.target.checked,
-                          rateioPoloIds:
-                            prev.rateioPoloIds.length > 0
-                              ? prev.rateioPoloIds
-                              : allPolos.map((p) => p.id),
-                        }))
-                      }
-                      className="rounded border-slate-300"
-                    />
-                    <Split className="w-4 h-4 text-emerald-600" />
-                    Ratear (dividir) este gasto entre múltiplos polos
-                  </label>
-
-                  {formData.rateioAtivo && (
-                    <select
-                      aria-label="Critério de Rateio"
-                      value={formData.rateioCriterio}
-                      onChange={(e) =>
-                        setFormData((prev) => ({
-                          ...prev,
-                          rateioCriterio: e.target.value as CriterioRateio,
-                        }))
-                      }
-                      className="px-2.5 py-1 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md"
-                    >
-                      <option value="proporcional">
-                        Proporcional a {rede?.config.rotuloTamanho || 'Alunos ativos'}
-                      </option>
-                      <option value="igual">Divisão Igualitária</option>
-                      <option value="manual">Valores Manuais</option>
-                    </select>
-                  )}
-                </div>
-
-                {formData.rateioAtivo && (
-                  <div className="space-y-2 pt-1">
-                    <div className="text-[11px] text-slate-500">
-                      Selecione os polos participantes do rateio (a soma fecha exatamente{' '}
-                      <strong>{formatBRL(valorTotalCalculado)}</strong>):
-                    </div>
-                    <div className="space-y-2">
-                      {allPolos.map((p) => {
-                        const isSelected = formData.rateioPoloIds.includes(p.id);
-                        const parte = formData.rateioPartes.find((pt) => pt.poloId === p.id);
-                        return (
-                          <div
-                            key={p.id}
-                            className="flex items-center justify-between gap-3 text-xs bg-white dark:bg-slate-900 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700"
-                          >
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={(e) => {
-                                  const checked = e.target.checked;
-                                  setFormData((prev) => {
-                                    const nextIds = checked
-                                      ? [...prev.rateioPoloIds, p.id]
-                                      : prev.rateioPoloIds.filter((id) => id !== p.id);
-                                    return {
-                                      ...prev,
-                                      rateioPoloIds: nextIds,
-                                      rateioCriterio:
-                                        prev.rateioCriterio === 'manual'
-                                          ? 'proporcional'
-                                          : prev.rateioCriterio,
-                                    };
-                                  });
-                                }}
-                                className="rounded border-slate-300"
-                              />
-                              <span className="font-medium">{p.nome}</span>
-                              <span className="text-[11px] text-slate-400">
-                                ({p.indicadorTamanho} {rede?.config.rotuloTamanho})
-                              </span>
-                            </label>
-
-                            {isSelected && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-slate-400">R$</span>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  min="0"
-                                  aria-label={`Valor rateio ${p.nome}`}
-                                  value={parte?.valor ?? 0}
-                                  onChange={(e) => {
-                                    const val = Number(e.target.value);
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      rateioCriterio: 'manual',
-                                      rateioPartes: prev.rateioPartes.map((pt) =>
-                                        pt.poloId === p.id ? { ...pt, valor: val } : pt
-                                      ),
-                                    }));
-                                  }}
-                                  className="w-28 px-2 py-1 text-right font-mono text-xs bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded"
-                                />
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="flex items-center justify-between text-xs pt-1 font-mono">
-                      <span>Soma das partes:</span>
-                      <span
-                        className={
-                          validateRateioSum(valorTotalCalculado, formData.rateioPartes)
-                            ? 'text-emerald-600 font-bold'
-                            : 'text-red-600 font-bold'
-                        }
-                      >
-                        {formatBRL(
-                          formData.rateioPartes.reduce((acc, pt) => acc + (pt.valor || 0), 0)
-                        )}{' '}
-                        / {formatBRL(valorTotalCalculado)}
-                      </span>
-                    </div>
-                  </div>
-                )}
+              <div>
+                <label
+                  htmlFor="lanc-observacoes"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
+                >
+                  Observações
+                </label>
+                <textarea
+                  id="lanc-observacoes"
+                  rows={2}
+                  placeholder="Observações opcionais"
+                  value={formData.observacoes}
+                  onChange={(e) =>
+                    setFormData((prev) => ({ ...prev, observacoes: e.target.value }))
+                  }
+                  className="w-full px-3 py-2 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg"
+                />
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-2">
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 rounded-lg"
+                  className="px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-emerald-600 rounded-lg hover:opacity-90"
+                  className="px-5 py-2 text-xs font-semibold text-white bg-[#002855] hover:bg-[#003875] rounded-lg cursor-pointer"
                 >
-                  <Check className="w-4 h-4" />
-                  {submitting ? 'Salvando...' : editingId ? 'Salvar Alterações' : 'Confirmar Lançamento'}
+                  {submitting ? 'Salvando...' : 'Salvar'}
                 </button>
               </div>
             </form>
@@ -1325,3 +906,5 @@ export const LancamentosPage: React.FC = () => {
     </div>
   );
 };
+
+export default LancamentosPage;

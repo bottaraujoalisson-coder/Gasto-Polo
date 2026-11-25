@@ -5,12 +5,22 @@
   :root {
     --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+    --unimar-navy: #002855;
+    --unimar-blue: #004B8D;
+    --unimar-accent: #0066CC;
   }
 
   body {
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    background-color: #f8fafc;
+    color: #0f172a;
+  }
+
+  .dark body {
+    background-color: #020817;
+    color: #f8fafc;
   }
 
   .font-mono,

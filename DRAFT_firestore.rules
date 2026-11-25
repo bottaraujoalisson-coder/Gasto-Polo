@@ -467,7 +467,7 @@ service cloud.firestore {
         allow delete: if isVerified() && isValidId(redeId) && isValidId(usuarioId) && isRedeAdmin(redeId);
       }
 
-      // Subcollection: Polos
+      // Subcollection: Polos (Managed exclusively by Administrador)
       match /polos/{poloId} {
         allow get: if isSignedIn() && isValidId(redeId) && isValidId(poloId) && hasPoloAccess(redeId, poloId);
         allow list: if isSignedIn() && existing().redeId == redeId && isActiveMember(redeId);
@@ -475,7 +475,7 @@ service cloud.firestore {
           isValidPolo(incoming(), redeId) && isRedeAdmin(redeId);
         allow update: if isVerified() && isValidId(redeId) && isValidId(poloId) &&
           isValidPolo(incoming(), redeId) &&
-          (isRedeAdmin(redeId) || (isRedeGestorOrAdmin(redeId) && hasPoloAccess(redeId, poloId))) &&
+          isRedeAdmin(redeId) &&
           incoming().redeId == existing().redeId &&
           incoming().criadoEm == existing().criadoEm &&
           incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'cidade', 'ativo', 'indicadorTamanho', 'demo', 'atualizadoEm']);
@@ -533,6 +533,7 @@ service cloud.firestore {
         allow create: if isVerified() && isValidId(redeId) && isValidId(lancamentoId) &&
           isValidLancamento(incoming(), redeId) &&
           incoming().criadoPor == request.auth.uid &&
+          incoming().excluido == false &&
           isRedeWriter(redeId) &&
           hasPoloAccess(redeId, incoming().poloId);
         allow update: if isVerified() && isValidId(redeId) && isValidId(lancamentoId) &&
@@ -542,7 +543,7 @@ service cloud.firestore {
           incoming().criadoEm == existing().criadoEm &&
           hasPoloAccess(redeId, existing().poloId) &&
           hasPoloAccess(redeId, incoming().poloId) && (
-            // Tier 1: Admin or Gestor of the Polo (can approve/reject/edit/logical-delete)
+            // Tier 1: Administrador or Gestor of the Polo (can edit and soft-delete in authorized polos)
             (isRedeGestorOrAdmin(redeId) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'data', 'competencia', 'poloId', 'tipo', 'categoriaId', 'itemId',
@@ -551,16 +552,18 @@ service cloud.firestore {
                 'justificativa', 'campanhaId', 'rateio', 'status', 'comprovanteUrl',
                 'atualizadoEm', 'excluido'
               ])) ||
-            // Tier 2: Active Writer (Operador) editing own launch ONLY while pending (cannot self-approve)
+            // Tier 2: Operador editing own launch ONLY while pending and CANNOT delete (excluido must remain false)
             (isRedeWriter(redeId) &&
               existing().criadoPor == request.auth.uid &&
               existing().status == 'pendente' &&
               incoming().status == 'pendente' &&
+              existing().excluido == false &&
+              incoming().excluido == false &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'data', 'competencia', 'poloId', 'tipo', 'categoriaId', 'itemId',
                 'descricao', 'fornecedorId', 'quantidade', 'unidade', 'valorUnitario',
                 'valorTotal', 'formaPagamento', 'emergencial', 'justificativa',
-                'campanhaId', 'rateio', 'comprovanteUrl', 'atualizadoEm', 'excluido'
+                'campanhaId', 'rateio', 'comprovanteUrl', 'atualizadoEm'
               ]))
           );
         allow delete: if isVerified() && isValidId(redeId) && isValidId(lancamentoId) && isRedeAdmin(redeId);
