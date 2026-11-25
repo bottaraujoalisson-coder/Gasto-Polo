@@ -1,0 +1,6 @@
+{
+  "name": "GastoPolo",
+  "description": "SaaS de controle, orçamento e otimização de gastos por polo e unidade.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

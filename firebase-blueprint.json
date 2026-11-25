@@ -1,0 +1,292 @@
+{
+  "entities": {
+    "UserRedeMap": {
+      "title": "UserRedeMap",
+      "description": "Maps an authenticated user UID to their active Rede tenant.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "maxLength": 254 },
+        "perfil": { "type": "string", "enum": ["admin", "gestor", "operador", "leitor"], "maxLength": 20 },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "redeId", "email", "perfil", "atualizadoEm"]
+    },
+    "Rede": {
+      "title": "Rede",
+      "description": "Tenant organization holding polos, users, categories, budgets, and expenses.",
+      "type": "object",
+      "properties": {
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "criadoPor": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" },
+        "config": { "type": "object" }
+      },
+      "required": ["nome", "criadoPor", "criadoEm", "atualizadoEm", "config"]
+    },
+    "UsuarioRede": {
+      "title": "UsuarioRede",
+      "description": "User member profile and RBAC permissions inside a Rede.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 254 },
+        "perfil": { "type": "string", "enum": ["admin", "gestor", "operador", "leitor"], "maxLength": 20 },
+        "poloIds": { "type": "array" },
+        "ativo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "redeId", "nome", "email", "perfil", "poloIds", "ativo", "criadoEm", "atualizadoEm"]
+    },
+    "Polo": {
+      "title": "Polo",
+      "description": "Operational unit (polo) belonging to a Rede.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "cidade": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "ativo": { "type": "boolean" },
+        "indicadorTamanho": { "type": "number" },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "nome", "cidade", "ativo", "indicadorTamanho", "criadoEm", "atualizadoEm"]
+    },
+    "Categoria": {
+      "title": "Categoria",
+      "description": "Expense category (interno or marketing) for a Rede.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "tipo": { "type": "string", "enum": ["interno", "marketing"], "maxLength": 20 },
+        "ativa": { "type": "boolean" },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "nome", "tipo", "ativa", "criadoEm", "atualizadoEm"]
+    },
+    "Fornecedor": {
+      "title": "Fornecedor",
+      "description": "Vendor or supplier registered in a Rede.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "contato": { "type": "string", "maxLength": 200 },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "nome", "contato", "criadoEm", "atualizadoEm"]
+    },
+    "ItemCatalogo": {
+      "title": "ItemCatalogo",
+      "description": "Catalog item with default category, unit, and optional minimum stock.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "unidade": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "categoriaId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "estoqueMinimo": { "type": "number" },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "nome", "unidade", "categoriaId", "estoqueMinimo", "criadoEm", "atualizadoEm"]
+    },
+    "Lancamento": {
+      "title": "Lancamento",
+      "description": "Expense transaction record for a polo (or split via rateio across polos).",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "data": { "type": "string", "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "competencia": { "type": "string", "maxLength": 7, "pattern": "^[0-9]{4}-[0-9]{2}$" },
+        "poloId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tipo": { "type": "string", "enum": ["interno", "marketing"], "maxLength": 20 },
+        "categoriaId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "itemId": { "type": "string", "maxLength": 128 },
+        "descricao": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "fornecedorId": { "type": "string", "maxLength": 128 },
+        "quantidade": { "type": "number" },
+        "unidade": { "type": "string", "maxLength": 30 },
+        "valorUnitario": { "type": "number" },
+        "valorTotal": { "type": "number" },
+        "formaPagamento": { "type": "string", "maxLength": 40 },
+        "responsavelUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "emergencial": { "type": "boolean" },
+        "justificativa": { "type": "string", "maxLength": 500 },
+        "campanhaId": { "type": "string", "maxLength": 128 },
+        "rateio": { "type": "object" },
+        "status": { "type": "string", "enum": ["pendente", "aprovado", "rejeitado"], "maxLength": 20 },
+        "comprovanteUrl": { "type": "string", "maxLength": 500 },
+        "criadoPor": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" },
+        "excluido": { "type": "boolean" },
+        "demo": { "type": "boolean" }
+      },
+      "required": [
+        "redeId",
+        "data",
+        "competencia",
+        "poloId",
+        "tipo",
+        "categoriaId",
+        "itemId",
+        "descricao",
+        "fornecedorId",
+        "quantidade",
+        "unidade",
+        "valorUnitario",
+        "valorTotal",
+        "formaPagamento",
+        "responsavelUid",
+        "emergencial",
+        "justificativa",
+        "campanhaId",
+        "rateio",
+        "status",
+        "comprovanteUrl",
+        "criadoPor",
+        "criadoEm",
+        "atualizadoEm",
+        "excluido"
+      ]
+    },
+    "Orcamento": {
+      "title": "Orcamento",
+      "description": "Monthly budget ceiling (teto) for a polo and category (docId = YYYY-MM_poloId_categoriaId).",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mes": { "type": "string", "maxLength": 7, "pattern": "^[0-9]{4}-[0-9]{2}$" },
+        "poloId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "categoriaId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "teto": { "type": "number" },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "mes", "poloId", "categoriaId", "teto", "criadoEm", "atualizadoEm"]
+    },
+    "Campanha": {
+      "title": "Campanha",
+      "description": "Marketing campaign with lead/action metrics and target CPA.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "poloId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "canal": { "type": "string", "enum": ["impressao", "brindes", "divulgacao_digital", "trafego_pago"], "maxLength": 40 },
+        "nome": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "inicio": { "type": "string", "maxLength": 10 },
+        "fim": { "type": "string", "maxLength": 10 },
+        "leads": { "type": "number" },
+        "acoes": { "type": "number" },
+        "tipoAcao": { "type": "string", "enum": ["lead", "visita", "matricula"], "maxLength": 20 },
+        "metaCustoPorAcao": { "type": "number" },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "poloId", "canal", "nome", "inicio", "fim", "leads", "acoes", "tipoAcao", "metaCustoPorAcao", "criadoEm", "atualizadoEm"]
+    },
+    "PlanoAcao": {
+      "title": "PlanoAcao",
+      "description": "Action plan generated from waste alerts to optimize spending.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "titulo": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "poloId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "categoriaId": { "type": "string", "maxLength": 128 },
+        "responsavelUid": { "type": "string", "maxLength": 128 },
+        "prazo": { "type": "string", "maxLength": 10 },
+        "economiaEstimada": { "type": "number" },
+        "status": { "type": "string", "enum": ["aberto", "em_andamento", "concluido", "cancelado"], "maxLength": 20 },
+        "origemAlerta": { "type": "string", "maxLength": 200 },
+        "demo": { "type": "boolean" },
+        "criadoEm": { "type": "string", "format": "date-time" },
+        "atualizadoEm": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "titulo", "poloId", "categoriaId", "responsavelUid", "prazo", "economiaEstimada", "status", "origemAlerta", "criadoEm", "atualizadoEm"]
+    },
+    "Auditoria": {
+      "title": "Auditoria",
+      "description": "Immutable audit log entry for create, update, and delete actions.",
+      "type": "object",
+      "properties": {
+        "redeId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "entidade": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "entidadeId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "acao": { "type": "string", "enum": ["criar", "editar", "excluir", "aprovar", "rejeitar"], "maxLength": 20 },
+        "uid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "resumo": { "type": "string", "maxLength": 300 },
+        "antes": { "type": "string", "maxLength": 2000 },
+        "depois": { "type": "string", "maxLength": 2000 },
+        "em": { "type": "string", "format": "date-time" }
+      },
+      "required": ["redeId", "entidade", "entidadeId", "acao", "uid", "resumo", "antes", "depois", "em"]
+    }
+  },
+  "firestore": {
+    "/userRedes/{userId}": {
+      "schema": { "$ref": "#/entities/UserRedeMap" },
+      "description": "Maps user UID to their Rede ID."
+    },
+    "/redes/{redeId}": {
+      "schema": { "$ref": "#/entities/Rede" },
+      "description": "Root network document."
+    },
+    "/redes/{redeId}/usuarios/{usuarioId}": {
+      "schema": { "$ref": "#/entities/UsuarioRede" },
+      "description": "Network users and RBAC profiles."
+    },
+    "/redes/{redeId}/polos/{poloId}": {
+      "schema": { "$ref": "#/entities/Polo" },
+      "description": "Operational units (polos) in the network."
+    },
+    "/redes/{redeId}/categorias/{categoriaId}": {
+      "schema": { "$ref": "#/entities/Categoria" },
+      "description": "Expense categories."
+    },
+    "/redes/{redeId}/fornecedores/{fornecedorId}": {
+      "schema": { "$ref": "#/entities/Fornecedor" },
+      "description": "Suppliers and vendors."
+    },
+    "/redes/{redeId}/itens/{itemId}": {
+      "schema": { "$ref": "#/entities/ItemCatalogo" },
+      "description": "Standardized item catalog."
+    },
+    "/redes/{redeId}/lancamentos/{lancamentoId}": {
+      "schema": { "$ref": "#/entities/Lancamento" },
+      "description": "Expense launches with rateio and approval workflow."
+    },
+    "/redes/{redeId}/orcamentos/{orcamentoId}": {
+      "schema": { "$ref": "#/entities/Orcamento" },
+      "description": "Monthly budget ceilings per polo and category."
+    },
+    "/redes/{redeId}/campanhas/{campanhaId}": {
+      "schema": { "$ref": "#/entities/Campanha" },
+      "description": "Marketing campaigns and CPA metrics."
+    },
+    "/redes/{redeId}/planosAcao/{planoId}": {
+      "schema": { "$ref": "#/entities/PlanoAcao" },
+      "description": "Waste optimization action plans."
+    },
+    "/redes/{redeId}/auditoria/{auditoriaId}": {
+      "schema": { "$ref": "#/entities/Auditoria" },
+      "description": "Immutable audit trail."
+    }
+  }
+}

@@ -1,0 +1,531 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true ||
+        request.auth.token.email == "bottaraujoalisson@gmail.com"
+      );
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == "bottaraujoalisson@gmail.com";
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Relational Master Gate Helpers
+    function userMemberPath(redeId, uid) {
+      return /databases/$(database)/documents/redes/$(redeId)/usuarios/$(uid);
+    }
+
+    function hasMemberDoc(redeId) {
+      return isSignedIn() && exists(userMemberPath(redeId, request.auth.uid));
+    }
+
+    function getMemberData(redeId) {
+      return get(userMemberPath(redeId, request.auth.uid)).data;
+    }
+
+    function isActiveMember(redeId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true)
+      );
+    }
+
+    function isRedeAdmin(redeId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && getMemberData(redeId).perfil == 'admin')
+      );
+    }
+
+    function isRedeGestorOrAdmin(redeId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && (
+          getMemberData(redeId).perfil == 'admin' ||
+          getMemberData(redeId).perfil == 'gestor'
+        ))
+      );
+    }
+
+    function isRedeWriter(redeId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && (
+          getMemberData(redeId).perfil == 'admin' ||
+          getMemberData(redeId).perfil == 'gestor' ||
+          getMemberData(redeId).perfil == 'operador'
+        ))
+      );
+    }
+
+    function hasPoloAccess(redeId, poloId) {
+      return isSignedIn() && (
+        isRedeAdmin(redeId) ||
+        (hasMemberDoc(redeId) && getMemberData(redeId).ativo == true && (
+          poloId == 'ALL' ||
+          poloId in getMemberData(redeId).poloIds
+        ))
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserRedeMap(data, userId) {
+      return data.keys().hasAll(['uid', 'redeId', 'email', 'perfil', 'atualizadoEm']) &&
+        data.keys().hasOnly(['uid', 'redeId', 'email', 'perfil', 'atualizadoEm']) &&
+        data.uid is string && data.uid == userId && data.uid == request.auth.uid && data.uid.size() <= 128 &&
+        isValidId(data.redeId) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.perfil is string && data.perfil in ['admin', 'gestor', 'operador', 'leitor'] &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidRedeConfig(cfg) {
+      return cfg is map &&
+        cfg.keys().hasAll(['limiteAprovacao', 'alerta1Pct', 'alerta2Pct', 'maxDiversasPct', 'rotuloTamanho']) &&
+        cfg.keys().hasOnly(['limiteAprovacao', 'alerta1Pct', 'alerta2Pct', 'maxDiversasPct', 'rotuloTamanho']) &&
+        cfg.limiteAprovacao is number && cfg.limiteAprovacao >= 0 &&
+        cfg.alerta1Pct is number && cfg.alerta1Pct >= 1 && cfg.alerta1Pct <= 200 &&
+        cfg.alerta2Pct is number && cfg.alerta2Pct >= 1 && cfg.alerta2Pct <= 300 &&
+        cfg.maxDiversasPct is number && cfg.maxDiversasPct >= 0 && cfg.maxDiversasPct <= 100 &&
+        cfg.rotuloTamanho is string && cfg.rotuloTamanho.size() >= 1 && cfg.rotuloTamanho.size() <= 60;
+    }
+
+    function isValidRede(data) {
+      return data.keys().hasAll(['nome', 'criadoPor', 'criadoEm', 'atualizadoEm', 'config']) &&
+        data.keys().hasOnly(['nome', 'criadoPor', 'criadoEm', 'atualizadoEm', 'config']) &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        isValidId(data.criadoPor) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40 &&
+        isValidRedeConfig(data.config);
+    }
+
+    function isValidUsuarioRede(data, redeId) {
+      return data.keys().hasAll(['uid', 'redeId', 'nome', 'email', 'perfil', 'poloIds', 'ativo', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['uid', 'redeId', 'nome', 'email', 'perfil', 'poloIds', 'ativo', 'criadoEm', 'atualizadoEm']) &&
+        isValidId(data.uid) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.perfil is string && data.perfil in ['admin', 'gestor', 'operador', 'leitor'] &&
+        data.poloIds is list && data.poloIds.size() <= 50 &&
+        (data.poloIds.size() == 0 || (data.poloIds[0] is string && data.poloIds[0].size() <= 128)) &&
+        data.ativo is bool &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidPolo(data, redeId) {
+      return data.keys().hasAll(['redeId', 'nome', 'cidade', 'ativo', 'indicadorTamanho', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'nome', 'cidade', 'ativo', 'indicadorTamanho', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.cidade is string && data.cidade.size() >= 1 && data.cidade.size() <= 120 &&
+        data.ativo is bool &&
+        data.indicadorTamanho is number && data.indicadorTamanho >= 0 &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidCategoria(data, redeId) {
+      return data.keys().hasAll(['redeId', 'nome', 'tipo', 'ativa', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'nome', 'tipo', 'ativa', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.tipo is string && data.tipo in ['interno', 'marketing'] &&
+        data.ativa is bool &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidFornecedor(data, redeId) {
+      return data.keys().hasAll(['redeId', 'nome', 'contato', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'nome', 'contato', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.contato is string && data.contato.size() <= 200 &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidItemCatalogo(data, redeId) {
+      return data.keys().hasAll(['redeId', 'nome', 'unidade', 'categoriaId', 'estoqueMinimo', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'nome', 'unidade', 'categoriaId', 'estoqueMinimo', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.unidade is string && data.unidade.size() >= 1 && data.unidade.size() <= 30 &&
+        isValidId(data.categoriaId) &&
+        data.estoqueMinimo is number && data.estoqueMinimo >= 0 &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidLancamento(data, redeId) {
+      return data.keys().hasAll([
+          'redeId', 'data', 'competencia', 'poloId', 'tipo', 'categoriaId',
+          'itemId', 'descricao', 'fornecedorId', 'quantidade', 'unidade',
+          'valorUnitario', 'valorTotal', 'formaPagamento', 'responsavelUid',
+          'emergencial', 'justificativa', 'campanhaId', 'rateio', 'status',
+          'comprovanteUrl', 'criadoPor', 'criadoEm', 'atualizadoEm', 'excluido'
+        ]) &&
+        data.keys().hasOnly([
+          'redeId', 'data', 'competencia', 'poloId', 'tipo', 'categoriaId',
+          'itemId', 'descricao', 'fornecedorId', 'quantidade', 'unidade',
+          'valorUnitario', 'valorTotal', 'formaPagamento', 'responsavelUid',
+          'emergencial', 'justificativa', 'campanhaId', 'rateio', 'status',
+          'comprovanteUrl', 'criadoPor', 'criadoEm', 'atualizadoEm', 'excluido', 'demo'
+        ]) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.data is string && data.data.size() == 10 && data.data.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.competencia is string && data.competencia.size() == 7 && data.competencia.matches('^[0-9]{4}-[0-9]{2}$') &&
+        isValidId(data.poloId) &&
+        data.tipo is string && data.tipo in ['interno', 'marketing'] &&
+        isValidId(data.categoriaId) &&
+        data.itemId is string && data.itemId.size() <= 128 &&
+        data.descricao is string && data.descricao.size() >= 1 && data.descricao.size() <= 240 &&
+        data.fornecedorId is string && data.fornecedorId.size() <= 128 &&
+        data.quantidade is number && data.quantidade >= 0 &&
+        data.unidade is string && data.unidade.size() <= 30 &&
+        data.valorUnitario is number && data.valorUnitario >= 0 &&
+        data.valorTotal is number && data.valorTotal >= 0 &&
+        data.formaPagamento is string && data.formaPagamento.size() <= 40 &&
+        isValidId(data.responsavelUid) &&
+        data.emergencial is bool &&
+        data.justificativa is string && data.justificativa.size() <= 500 &&
+        data.campanhaId is string && data.campanhaId.size() <= 128 &&
+        data.rateio is map &&
+        data.status is string && data.status in ['pendente', 'aprovado', 'rejeitado'] &&
+        data.comprovanteUrl is string && data.comprovanteUrl.size() <= 500 &&
+        isValidId(data.criadoPor) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40 &&
+        data.excluido is bool &&
+        (!('demo' in data) || data.demo is bool);
+    }
+
+    function isValidOrcamento(data, redeId) {
+      return data.keys().hasAll(['redeId', 'mes', 'poloId', 'categoriaId', 'teto', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'mes', 'poloId', 'categoriaId', 'teto', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.mes is string && data.mes.size() == 7 && data.mes.matches('^[0-9]{4}-[0-9]{2}$') &&
+        isValidId(data.poloId) &&
+        isValidId(data.categoriaId) &&
+        data.teto is number && data.teto >= 0 &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidCampanha(data, redeId) {
+      return data.keys().hasAll(['redeId', 'poloId', 'canal', 'nome', 'inicio', 'fim', 'leads', 'acoes', 'tipoAcao', 'metaCustoPorAcao', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'poloId', 'canal', 'nome', 'inicio', 'fim', 'leads', 'acoes', 'tipoAcao', 'metaCustoPorAcao', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        isValidId(data.poloId) &&
+        data.canal is string && data.canal in ['impressao', 'brindes', 'divulgacao_digital', 'trafego_pago'] &&
+        data.nome is string && data.nome.size() >= 1 && data.nome.size() <= 120 &&
+        data.inicio is string && data.inicio.size() <= 10 &&
+        data.fim is string && data.fim.size() <= 10 &&
+        data.leads is number && data.leads >= 0 &&
+        data.acoes is number && data.acoes >= 0 &&
+        data.tipoAcao is string && data.tipoAcao in ['lead', 'visita', 'matricula'] &&
+        data.metaCustoPorAcao is number && data.metaCustoPorAcao >= 0 &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidPlanoAcao(data, redeId) {
+      return data.keys().hasAll(['redeId', 'titulo', 'poloId', 'categoriaId', 'responsavelUid', 'prazo', 'economiaEstimada', 'status', 'origemAlerta', 'criadoEm', 'atualizadoEm']) &&
+        data.keys().hasOnly(['redeId', 'titulo', 'poloId', 'categoriaId', 'responsavelUid', 'prazo', 'economiaEstimada', 'status', 'origemAlerta', 'demo', 'criadoEm', 'atualizadoEm']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.titulo is string && data.titulo.size() >= 1 && data.titulo.size() <= 160 &&
+        isValidId(data.poloId) &&
+        data.categoriaId is string && data.categoriaId.size() <= 128 &&
+        data.responsavelUid is string && data.responsavelUid.size() <= 128 &&
+        data.prazo is string && data.prazo.size() <= 10 &&
+        data.economiaEstimada is number && data.economiaEstimada >= 0 &&
+        data.status is string && data.status in ['aberto', 'em_andamento', 'concluido', 'cancelado'] &&
+        data.origemAlerta is string && data.origemAlerta.size() <= 200 &&
+        (!('demo' in data) || data.demo is bool) &&
+        data.criadoEm is string && data.criadoEm.size() <= 40 &&
+        data.atualizadoEm is string && data.atualizadoEm.size() <= 40;
+    }
+
+    function isValidAuditoria(data, redeId) {
+      return data.keys().hasAll(['redeId', 'entidade', 'entidadeId', 'acao', 'uid', 'resumo', 'antes', 'depois', 'em']) &&
+        data.keys().hasOnly(['redeId', 'entidade', 'entidadeId', 'acao', 'uid', 'resumo', 'antes', 'depois', 'em']) &&
+        data.redeId is string && data.redeId == redeId &&
+        data.entidade is string && data.entidade.size() >= 1 && data.entidade.size() <= 60 &&
+        data.entidadeId is string && data.entidadeId.size() >= 1 && data.entidadeId.size() <= 128 &&
+        data.acao is string && data.acao in ['criar', 'editar', 'excluir', 'aprovar', 'rejeitar'] &&
+        data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128 &&
+        data.resumo is string && data.resumo.size() <= 300 &&
+        data.antes is string && data.antes.size() <= 2000 &&
+        data.depois is string && data.depois.size() <= 2000 &&
+        data.em is string && data.em.size() <= 40;
+    }
+
+    // 4. Collection Match Blocks
+
+    // Connection test probe
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // User to Rede mapping (PII Isolated to Owner Only)
+    match /userRedes/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if isSignedIn() && existing().uid == request.auth.uid;
+      allow create: if isVerified() && isValidId(userId) && isValidUserRedeMap(incoming(), userId);
+      allow update: if isVerified() && isValidId(userId) && isValidUserRedeMap(incoming(), userId) &&
+        request.auth.uid == userId &&
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['redeId', 'email', 'perfil', 'atualizadoEm']);
+      allow delete: if false;
+    }
+
+    // Redes (Tenant Root)
+    match /redes/{redeId} {
+      allow get: if isSignedIn() && isValidId(redeId) && (isActiveMember(redeId) || existing().criadoPor == request.auth.uid);
+      allow list: if isSignedIn() && existing().criadoPor == request.auth.uid;
+      allow create: if isVerified() && isValidId(redeId) && isValidRede(incoming()) &&
+        incoming().criadoPor == request.auth.uid;
+      allow update: if isVerified() && isValidId(redeId) && isValidRede(incoming()) &&
+        isRedeAdmin(redeId) &&
+        incoming().criadoPor == existing().criadoPor &&
+        incoming().criadoEm == existing().criadoEm &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'config', 'atualizadoEm']);
+      allow delete: if false;
+
+      // Subcollection: Usuarios (PII Isolated to Owner or Rede Admin)
+      match /usuarios/{usuarioId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(usuarioId) && (
+          (request.auth.uid == usuarioId && existing().ativo == true) ||
+          isRedeAdmin(redeId)
+        );
+        allow list: if isSignedIn() && existing().redeId == redeId && (
+          existing().uid == request.auth.uid ||
+          isRedeGestorOrAdmin(redeId)
+        );
+        allow create: if isVerified() && isValidId(redeId) && isValidId(usuarioId) &&
+          isValidUsuarioRede(incoming(), redeId) && (
+            isRedeAdmin(redeId) ||
+            (request.auth.uid == usuarioId &&
+              get(/databases/$(database)/documents/redes/$(redeId)).data.criadoPor == request.auth.uid)
+          );
+        allow update: if isVerified() && isValidId(redeId) && isValidId(usuarioId) &&
+          isValidUsuarioRede(incoming(), redeId) &&
+          isRedeAdmin(redeId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'email', 'perfil', 'poloIds', 'ativo', 'atualizadoEm']);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(usuarioId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Polos
+      match /polos/{poloId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(poloId) && hasPoloAccess(redeId, poloId);
+        allow list: if isSignedIn() && existing().redeId == redeId && isActiveMember(redeId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(poloId) &&
+          isValidPolo(incoming(), redeId) && isRedeAdmin(redeId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(poloId) &&
+          isValidPolo(incoming(), redeId) &&
+          (isRedeAdmin(redeId) || (isRedeGestorOrAdmin(redeId) && hasPoloAccess(redeId, poloId))) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'cidade', 'ativo', 'indicadorTamanho', 'demo', 'atualizadoEm']);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(poloId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Categorias
+      match /categorias/{categoriaId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(categoriaId) && isActiveMember(redeId);
+        allow list: if isSignedIn() && existing().redeId == redeId && isActiveMember(redeId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(categoriaId) &&
+          isValidCategoria(incoming(), redeId) && isRedeAdmin(redeId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(categoriaId) &&
+          isValidCategoria(incoming(), redeId) && isRedeAdmin(redeId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'tipo', 'ativa', 'demo', 'atualizadoEm']);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(categoriaId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Fornecedores
+      match /fornecedores/{fornecedorId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(fornecedorId) && isActiveMember(redeId);
+        allow list: if isSignedIn() && existing().redeId == redeId && isActiveMember(redeId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(fornecedorId) &&
+          isValidFornecedor(incoming(), redeId) && isRedeWriter(redeId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(fornecedorId) &&
+          isValidFornecedor(incoming(), redeId) && isRedeGestorOrAdmin(redeId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'contato', 'demo', 'atualizadoEm']);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(fornecedorId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Itens do Catálogo
+      match /itens/{itemId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(itemId) && isActiveMember(redeId);
+        allow list: if isSignedIn() && existing().redeId == redeId && isActiveMember(redeId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(itemId) &&
+          isValidItemCatalogo(incoming(), redeId) && isRedeGestorOrAdmin(redeId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(itemId) &&
+          isValidItemCatalogo(incoming(), redeId) && isRedeGestorOrAdmin(redeId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'unidade', 'categoriaId', 'estoqueMinimo', 'demo', 'atualizadoEm']);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(itemId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Lançamentos (Polo-level RBAC enforced on get, list, create, update, delete)
+      match /lancamentos/{lancamentoId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(lancamentoId) &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow list: if isSignedIn() && existing().redeId == redeId &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(lancamentoId) &&
+          isValidLancamento(incoming(), redeId) &&
+          incoming().criadoPor == request.auth.uid &&
+          isRedeWriter(redeId) &&
+          hasPoloAccess(redeId, incoming().poloId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(lancamentoId) &&
+          isValidLancamento(incoming(), redeId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoPor == existing().criadoPor &&
+          incoming().criadoEm == existing().criadoEm &&
+          hasPoloAccess(redeId, existing().poloId) &&
+          hasPoloAccess(redeId, incoming().poloId) && (
+            // Tier 1: Admin or Gestor of the Polo (can approve/reject/edit/logical-delete)
+            (isRedeGestorOrAdmin(redeId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'data', 'competencia', 'poloId', 'tipo', 'categoriaId', 'itemId',
+                'descricao', 'fornecedorId', 'quantidade', 'unidade', 'valorUnitario',
+                'valorTotal', 'formaPagamento', 'responsavelUid', 'emergencial',
+                'justificativa', 'campanhaId', 'rateio', 'status', 'comprovanteUrl',
+                'atualizadoEm', 'excluido'
+              ])) ||
+            // Tier 2: Operador editing own launch ONLY while pending (cannot self-approve)
+            (existing().criadoPor == request.auth.uid &&
+              existing().status == 'pendente' &&
+              incoming().status == 'pendente' &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'data', 'competencia', 'poloId', 'tipo', 'categoriaId', 'itemId',
+                'descricao', 'fornecedorId', 'quantidade', 'unidade', 'valorUnitario',
+                'valorTotal', 'formaPagamento', 'emergencial', 'justificativa',
+                'campanhaId', 'rateio', 'comprovanteUrl', 'atualizadoEm', 'excluido'
+              ]))
+          );
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(lancamentoId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Orçamentos (Tetos mensais)
+      match /orcamentos/{orcamentoId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(orcamentoId) &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow list: if isSignedIn() && existing().redeId == redeId &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(orcamentoId) &&
+          isValidOrcamento(incoming(), redeId) &&
+          isRedeGestorOrAdmin(redeId) &&
+          hasPoloAccess(redeId, incoming().poloId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(orcamentoId) &&
+          isValidOrcamento(incoming(), redeId) &&
+          isRedeGestorOrAdmin(redeId) &&
+          hasPoloAccess(redeId, existing().poloId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().poloId == existing().poloId &&
+          incoming().categoriaId == existing().categoriaId &&
+          incoming().mes == existing().mes &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['teto', 'demo', 'atualizadoEm']);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(orcamentoId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Campanhas de Marketing
+      match /campanhas/{campanhaId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(campanhaId) &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow list: if isSignedIn() && existing().redeId == redeId &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(campanhaId) &&
+          isValidCampanha(incoming(), redeId) &&
+          isRedeGestorOrAdmin(redeId) &&
+          hasPoloAccess(redeId, incoming().poloId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(campanhaId) &&
+          isValidCampanha(incoming(), redeId) &&
+          isRedeGestorOrAdmin(redeId) &&
+          hasPoloAccess(redeId, existing().poloId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'poloId', 'canal', 'nome', 'inicio', 'fim', 'leads', 'acoes',
+            'tipoAcao', 'metaCustoPorAcao', 'demo', 'atualizadoEm'
+          ]);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(campanhaId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Planos de Ação
+      match /planosAcao/{planoId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(planoId) &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow list: if isSignedIn() && existing().redeId == redeId &&
+          hasPoloAccess(redeId, existing().poloId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(planoId) &&
+          isValidPlanoAcao(incoming(), redeId) &&
+          isRedeGestorOrAdmin(redeId) &&
+          hasPoloAccess(redeId, incoming().poloId);
+        allow update: if isVerified() && isValidId(redeId) && isValidId(planoId) &&
+          isValidPlanoAcao(incoming(), redeId) &&
+          isRedeGestorOrAdmin(redeId) &&
+          hasPoloAccess(redeId, existing().poloId) &&
+          incoming().redeId == existing().redeId &&
+          incoming().criadoEm == existing().criadoEm &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'titulo', 'poloId', 'categoriaId', 'responsavelUid', 'prazo',
+            'economiaEstimada', 'status', 'origemAlerta', 'demo', 'atualizadoEm'
+          ]);
+        allow delete: if isVerified() && isValidId(redeId) && isValidId(planoId) && isRedeAdmin(redeId);
+      }
+
+      // Subcollection: Auditoria (Immutable append-only audit trail)
+      match /auditoria/{auditoriaId} {
+        allow get: if isSignedIn() && isValidId(redeId) && isValidId(auditoriaId) && isRedeGestorOrAdmin(redeId);
+        allow list: if isSignedIn() && existing().redeId == redeId && isRedeGestorOrAdmin(redeId);
+        allow create: if isVerified() && isValidId(redeId) && isValidId(auditoriaId) &&
+          isValidAuditoria(incoming(), redeId) && isActiveMember(redeId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}
